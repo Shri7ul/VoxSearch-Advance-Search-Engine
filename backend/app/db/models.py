@@ -1,7 +1,9 @@
 """SQLAlchemy 2.x declarative models for the VoxSearch ``voxsearch`` schema.
 
-Goal 06 is a **schema / migration foundation only**. This module defines the
-initial relational metadata; it intentionally contains:
+Goal 06 established the initial relational schema / migration foundation and
+Goal 07 added composite foreign keys that enforce cross-table video ownership
+consistency. This module defines the relational metadata; it intentionally
+contains:
 
 * NO vector / embedding columns or indexes (planned for a later goal),
 * NO ORM relationships (the tables stand alone; ``get_db`` sessions are used
@@ -20,6 +22,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     MetaData,
@@ -33,6 +36,18 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 SCHEMA = "voxsearch"
+
+# --- Goal 07: cross-table video ownership integrity -----------------------
+# A composite FK requires a UNIQUE constraint on exactly the referenced column
+# pair. ``id`` is already the PK, but PostgreSQL requires the (id, video_id)
+# pair to be declared explicitly, hence these unique constraints. Names are
+# kept byte-for-byte in sync with the Goal 07 Alembic migration
+# (migrations/versions/fe7b2b8e5323_enforce_transcript_ownership_integrity.py).
+UQ_CONTENT_RIGHTS_ID_VIDEO_ID = "uq_content_rights_id_video_id"
+UQ_TRANSCRIPT_ASSETS_ID_VIDEO_ID = "uq_transcript_assets_id_video_id"
+FK_TRANSCRIPT_ASSETS_CONTENT_RIGHT_VIDEO = "fk_transcript_assets_content_right_id_video_id"
+FK_TRANSCRIPT_SEGMENTS_ASSET_VIDEO = "fk_transcript_segments_transcript_asset_id_video_id"
+
 
 # Explicit schema-qualified metadata: every Table created from this Base is
 # placed in ``voxsearch`` and ForeignKey targets are resolved against it.
@@ -149,6 +164,9 @@ class ContentRight(Base):
     )
 
     __table_args__ = (
+        # Backs the composite FK from transcript_assets(content_right_id,
+        # video_id). Required by PostgreSQL even though `id` is already unique.
+        UniqueConstraint("id", "video_id", name=UQ_CONTENT_RIGHTS_ID_VIDEO_ID),
         Index("ix_content_rights_video_id", "video_id"),
     )
 
@@ -157,7 +175,9 @@ class TranscriptAsset(Base):
     """A tracked transcript asset for a video, tied to its authorization.
 
     ``source_type`` (e.g. youtube_captions / asr / upload) and ``language``
-    identify the asset; ``status`` tracks its processing lifecycle.
+    identify the asset; ``status`` tracks its processing lifecycle. The
+    composite FK guarantees ``content_right_id`` belongs to this asset's
+    ``video_id`` — an asset can never be tied to another video's rights record.
     """
 
     __tablename__ = "transcript_assets"
@@ -171,14 +191,7 @@ class TranscriptAsset(Base):
         ForeignKey(f"{SCHEMA}.videos.id", name="fk_transcript_assets_video_id_videos"),
         nullable=False,
     )
-    content_right_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        ForeignKey(
-            f"{SCHEMA}.content_rights.id",
-            name="fk_transcript_assets_content_right_id_content_rights",
-        ),
-        nullable=False,
-    )
+    content_right_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
     language: Mapped[str] = mapped_column(String(16), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -191,7 +204,22 @@ class TranscriptAsset(Base):
     )
 
     __table_args__ = (
+        # Backs the composite FK from transcript_segments(transcript_asset_id,
+        # video_id). Required by PostgreSQL even though `id` is already unique.
+        UniqueConstraint("id", "video_id", name=UQ_TRANSCRIPT_ASSETS_ID_VIDEO_ID),
+        # Ownership guarantee: the referenced content-right must belong to the
+        # SAME video. Replaces the old single-column FK on content_right_id.
+        ForeignKeyConstraint(
+            ["content_right_id", "video_id"],
+            [
+                f"{SCHEMA}.content_rights.id",
+                f"{SCHEMA}.content_rights.video_id",
+            ],
+            name=FK_TRANSCRIPT_ASSETS_CONTENT_RIGHT_VIDEO,
+        ),
         Index("ix_transcript_assets_video_id", "video_id"),
+        # content_right_id is the leading column of the composite FK above;
+        # PostgreSQL does not auto-index it, so this index is retained.
         Index("ix_transcript_assets_content_right_id", "content_right_id"),
     )
 
@@ -201,7 +229,8 @@ class TranscriptSegment(Base):
 
     ``start_seconds`` / ``end_seconds`` are offsets into the video. Check
     constraints enforce non-negative start, end strictly after start, and
-    non-empty transcript text.
+    non-empty transcript text. The composite FK guarantees the referenced
+    transcript asset belongs to this segment's ``video_id``.
     """
 
     __tablename__ = "transcript_segments"
@@ -210,14 +239,7 @@ class TranscriptSegment(Base):
         Uuid, primary_key=True, default=uuid.uuid4,
         server_default=text("gen_random_uuid()"),
     )
-    transcript_asset_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid,
-        ForeignKey(
-            f"{SCHEMA}.transcript_assets.id",
-            name="fk_transcript_segments_asset_id_transcript_assets",
-        ),
-        nullable=False,
-    )
+    transcript_asset_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     video_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
         ForeignKey(f"{SCHEMA}.videos.id", name="fk_transcript_segments_video_id_videos"),
@@ -236,6 +258,16 @@ class TranscriptSegment(Base):
     )
 
     __table_args__ = (
+        # Ownership guarantee: the referenced transcript asset must belong to
+        # the SAME video. Replaces the old single-column FK on asset id.
+        ForeignKeyConstraint(
+            ["transcript_asset_id", "video_id"],
+            [
+                f"{SCHEMA}.transcript_assets.id",
+                f"{SCHEMA}.transcript_assets.video_id",
+            ],
+            name=FK_TRANSCRIPT_SEGMENTS_ASSET_VIDEO,
+        ),
         # One segment per start offset per asset; its leading column also
         # indexes transcript_asset_id, so no redundant standalone FK index.
         UniqueConstraint(

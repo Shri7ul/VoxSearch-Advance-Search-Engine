@@ -33,7 +33,9 @@ EXPECTED_TABLES = {
     "transcript_assets",
     "transcript_segments",
 }
-REVISION_ID = "b3727ed7438a"
+REVISION_ID = "b3727ed7438a"  # Goal 06 initial schema
+GOAL07_REVISION = "fe7b2b8e5323"  # Goal 07 ownership integrity
+HEAD_REVISION = GOAL07_REVISION
 
 
 def tbl(name: str):
@@ -91,28 +93,32 @@ def test_uuid_compiles_to_native_postgres_uuid(name: str) -> None:
 
 # --- 3. Foreign key definitions --------------------------------------------
 
-EXPECTED_FKS = {
-    "videos": {"channel_id": "voxsearch.channels.id"},
-    "content_rights": {"video_id": "voxsearch.videos.id"},
+# (local column, fully-qualified target column) edges. A set is used because
+# Goal 07 composite FKs make ``video_id`` a member of two FK constraints.
+EXPECTED_FK_EDGES = {
+    "videos": {("channel_id", "voxsearch.channels.id")},
+    "content_rights": {("video_id", "voxsearch.videos.id")},
     "transcript_assets": {
-        "video_id": "voxsearch.videos.id",
-        "content_right_id": "voxsearch.content_rights.id",
+        ("video_id", "voxsearch.videos.id"),
+        ("content_right_id", "voxsearch.content_rights.id"),
+        ("video_id", "voxsearch.content_rights.video_id"),
     },
     "transcript_segments": {
-        "transcript_asset_id": "voxsearch.transcript_assets.id",
-        "video_id": "voxsearch.videos.id",
+        ("transcript_asset_id", "voxsearch.transcript_assets.id"),
+        ("video_id", "voxsearch.transcript_assets.video_id"),
+        ("video_id", "voxsearch.videos.id"),
     },
 }
 
 
-@pytest.mark.parametrize("name", sorted(EXPECTED_FKS))
+@pytest.mark.parametrize("name", sorted(EXPECTED_FK_EDGES))
 def test_foreign_keys_resolve_to_expected_targets(name: str) -> None:
     t = tbl(name)
     resolved = {
-        fk.parent.name: f"{fk.column.table.fullname}.{fk.column.name}"
+        (fk.parent.name, f"{fk.column.table.fullname}.{fk.column.name}")
         for fk in t.foreign_keys
     }
-    assert resolved == EXPECTED_FKS[name]
+    assert resolved == EXPECTED_FK_EDGES[name]
 
 
 def test_channels_have_no_foreign_keys() -> None:
@@ -208,7 +214,7 @@ def test_content_rights_authorization_fields() -> None:
 
 
 def test_no_vector_columns() -> None:
-    # Out of scope for Goal 06: no embedding/vector columns anywhere.
+    # Out of scope: no embedding/vector columns anywhere.
     for t in Base.metadata.tables.values():
         for col in t.columns:
             assert "vector" not in col.name.lower()
@@ -240,16 +246,22 @@ def test_migration_revision_discovery() -> None:
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
     script = ScriptDirectory.from_config(cfg)
 
-    heads = script.get_heads()
-    assert heads == [REVISION_ID]
+    # Exactly one head (the Goal 07 migration).
+    assert script.get_heads() == [HEAD_REVISION]
 
-    revision = script.get_revision(REVISION_ID)
-    assert revision is not None
-    assert revision.down_revision is None
-    assert revision.is_head is True
+    goal06 = script.get_revision(REVISION_ID)
+    assert goal06 is not None
+    assert goal06.down_revision is None
+    assert goal06.is_head is False
 
-    all_revisions = list(script.walk_revisions())
-    assert [r.revision for r in all_revisions] == [REVISION_ID]
+    goal07 = script.get_revision(GOAL07_REVISION)
+    assert goal07 is not None
+    assert goal07.down_revision == REVISION_ID
+    assert goal07.is_head is True
+
+    assert [r.revision for r in script.walk_revisions()] == [
+        GOAL07_REVISION, REVISION_ID,
+    ]
 
 
 def test_migration_module_is_importable_and_pure() -> None:
