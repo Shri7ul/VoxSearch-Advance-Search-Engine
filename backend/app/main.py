@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from app.api import health
 from app.core.config import get_settings
 from app.core.logging import setup_logging
+from app.db import health as db_health
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +42,19 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "VoxSearch backend API — Goal 02 foundation. Currently exposes only "
-            "a health check; search, ingestion, and database features are planned "
-            "for later goals."
+            "VoxSearch backend API. Exposes a basic liveness probe (GET /health) "
+            "and a read-only database readiness probe (GET /health/db). Search, "
+            "ingestion, embeddings, and application data are planned for later "
+            "goals."
         ),
         lifespan=lifespan,
     )
 
-    # The liveness probe is mounted at the root so GET /health works without a
-    # prefix. API_PREFIX is reserved for future versioned feature routers.
+    # Both probes are mounted at the root so GET /health and GET /health/db work
+    # without a prefix. API_PREFIX is reserved for future versioned routers. The
+    # basic liveness probe never touches the database.
     application.include_router(health.router)
+    application.include_router(db_health.router)
     application.state.api_prefix = settings.api_prefix
 
     return application
