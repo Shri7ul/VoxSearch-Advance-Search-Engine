@@ -3,9 +3,9 @@
 FastAPI backend for VoxSearch.
 
 > **Scope:** Application initialization, centralized settings, logging, and a
-> `GET /health` endpoint (Goal 02), running on a reproducible Python 3.12
-> environment (Goal 03). Supabase, PostgreSQL, embeddings, transcript
-> processing, and search are **not** implemented yet.
+> `GET /health` endpoint (Goal 02), on a reproducible **standalone** Python 3.12
+> environment decoupled from Conda (Goals 03–04). Supabase, PostgreSQL,
+> embeddings, transcript processing, and search are **not** implemented yet.
 
 ## Structure
 
@@ -23,8 +23,9 @@ backend/
 │       └── health.py      # GET /health
 ├── tests/
 │   └── test_health.py     # pytest suite
-├── .venv/                 # local virtual environment (git-ignored, NOT committed)
-├── requirements.txt       # exact direct-dependency pins
+├── .venv/                 # standalone Python 3.12 venv (git-ignored, NOT committed)
+├── requirements.txt       # exact direct-dependency pins (6 packages)
+├── requirements-lock.txt  # fully resolved environment snapshot (29 packages)
 ├── pytest.ini
 ├── .env.example           # copy to .env (not committed)
 └── README.md
@@ -34,42 +35,39 @@ Run all commands below **from the `backend/` directory**.
 
 ---
 
-## 1. Python 3.12 prerequisite
+## 1. Standalone Python 3.12 prerequisite
 
-**Python 3.12 is the project baseline.** Python 3.14 passed the early backend
-tests but is *not* assumed suitable for the future ML stack, so do not use it
-for this environment.
+**Python 3.12 is the project baseline, installed as a standalone python.org /
+winget runtime — NOT from a Conda environment.** Python 3.14 passed the early
+backend tests but is *not* assumed suitable for the future ML stack.
 
-Check the installed interpreters:
+If Python 3.12 is not present, install the official standalone runtime:
 
 ```powershell
-py --list
+winget install --id Python.Python.3.12 -e
+```
+
+This does not modify or remove any existing Conda environments.
+
+Verify the interpreter is registered and resolves to a standalone (non-Conda)
+installation:
+
+```powershell
 py -0p
-```
-
-Confirm a `3.12` entry is present, then verify:
-
-```powershell
 py -3.12 --version
-python --version
+py -3.12 -c "import sys; print(sys.base_prefix)"
 ```
 
-> If Python 3.12 is not installed, install a standard python.org / winget
-> Python 3.12 first. **Do not substitute 3.13 or 3.14.**
+`sys.base_prefix` must point at the standalone install, e.g.
+`C:\Users\USER\AppData\Local\Programs\Python\Python312` — **not** at
+`anaconda3\envs\...`. Do not substitute Python 3.13 or 3.14.
 
 ## 2. Virtual environment (Windows PowerShell)
 
-Create the environment **with Python 3.12** (one time):
+Create the environment from the standalone Python 3.12 (one time):
 
 ```powershell
 py -3.12 -m venv .venv
-```
-
-If `py -3.12` is not registered but a Python 3.12 interpreter exists elsewhere,
-point at that interpreter directly instead:
-
-```powershell
-& "C:\path\to\Python312\python.exe" -m venv .venv
 ```
 
 Activate it:
@@ -86,8 +84,17 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
 ```
 
-Confirm activation — `python --version` must report **3.12.x** and
-`python -c "import sys; print(sys.prefix)"` must point at `.venv`.
+Confirm activation and that the venv is independent of Conda:
+
+```powershell
+python --version
+python -c "import sys; print(sys.executable); print(sys.base_prefix); print(sys.prefix)"
+```
+
+- `python --version` must report **3.12.x** (validated: `3.12.10`).
+- `sys.base_prefix` must point at the standalone Python 3.12 install.
+- `sys.prefix` must point at `backend\.venv`.
+- Neither may reference `conda`, `anaconda`, or `ml_clean`.
 
 To deactivate:
 
@@ -100,15 +107,17 @@ deactivate
 
 ## 3. Dependency installation
 
-With `.venv` activated:
+With `.venv` activated, choose one of the two workflows below.
+
+### Standard installation (direct dependencies)
 
 ```powershell
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-`requirements.txt` pins the six direct dependencies exactly for reproducible
-installs:
+`requirements.txt` pins the six direct dependencies exactly. Transitive
+versions are resolved by pip:
 
 | Package | Pin |
 | --- | --- |
@@ -119,10 +128,25 @@ installs:
 | `pytest` | 9.2.0 |
 | `httpx` | 0.28.1 |
 
+### Reproducible installation (fully resolved lock)
+
+`requirements-lock.txt` is a `pip freeze` snapshot of the exact, validated
+environment (29 packages). Use it to reproduce the environment without
+re-resolving transitive dependencies:
+
+```powershell
+python -m pip install --upgrade pip
+pip install -r requirements-lock.txt
+```
+
+> `requirements.txt` remains the **direct dependency declaration**; do not
+> replace it with the lock file. Regenerate the lock from a clean venv with
+> `python -m pip freeze > requirements-lock.txt` whenever dependencies change.
+
 No ML packages, PyTorch, Transformers, Whisper, database drivers, or other
 future dependencies are included in this goal.
 
-Verify integrity:
+Verify integrity after either workflow:
 
 ```powershell
 python -m pip check
@@ -203,15 +227,36 @@ Expected `200 OK` response:
 
 ## Validation performed
 
-### Goal 03 — reproducible Python environment
+### Goal 04 — standalone Python runtime (decoupled from Conda)
 
-- `backend/.venv` created from CPython **3.12.14** (a `conda-forge` build in an
-  existing conda env), because `py -3.12` is not registered on this machine.
-  No new Python was installed and 3.13/3.14 were not used.
-- `python --version` → `Python 3.12.14`
+- Installed official standalone Python 3.12.10 via
+  `winget install --id Python.Python.3.12 -e`.
+- `py -3.12` → `C:\Users\USER\AppData\Local\Programs\Python\Python312\python.exe`
+  (standalone, no Conda reference).
+- Recreated `backend/.venv` from that interpreter:
+  - `pyvenv.cfg` home → `...\Python312`, version `3.12.10`
+  - `sys.base_prefix` → `C:\Users\USER\AppData\Local\Programs\Python\Python312`
+  - `sys.prefix` → `D:\Python Project\Advance-Search-Engine\backend\.venv`
+  - Neither references Conda.
+- `python -m pip install --upgrade pip` → pip 26.3;
+  `pip install -r requirements.txt` → 29 packages resolved.
 - `python -m pip check` → `No broken requirements found.`
-- `python -m pip list` → 29 packages, clean resolution
-- `pytest -v` → **4 passed**
+- `pytest -v` → **4 passed** (Python 3.12.10).
+- Live `uvicorn` + `curl /health` → `200 OK`,
+  `{"status":"healthy","service":"voxsearch-backend","version":"0.1.0"}`.
+- `requirements-lock.txt` generated from the fresh standalone 3.12 venv:
+  29 plain `name==version` pins; no local paths, editable installs, or Conda
+  references; validated plain UTF-8/ASCII (no BOM).
+
+### Goal 03 — reproducible Python environment (superseded by Goal 04)
+
+- Initially created `backend/.venv` from CPython 3.12.14 (a `conda-forge`
+  build in an existing conda env) because `py -3.12` was not registered.
+- Pinned the six direct dependencies and validated `pip check` + 4 passing
+  tests.
+- **Goal 04 replaced this Conda-based venv with a standalone Python 3.12.10
+  venv**, which is now the project standard. The old environment is not
+  committed.
 
 ### Goal 02 — backend foundation
 
@@ -219,4 +264,4 @@ Expected `200 OK` response:
 - `pytest -v`
 - `uvicorn app.main:app --host 127.0.0.1 --port 8000` + `curl /health`
 
-See the Goal 02/03 final reports in the session history for recorded results.
+See the Goal 02–04 final reports in the session history for recorded results.
