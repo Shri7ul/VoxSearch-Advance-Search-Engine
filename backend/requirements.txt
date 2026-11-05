@@ -1,0 +1,10 @@
+# VoxSearch backend — runtime and test dependencies.
+# Compatible stable ranges; validated against Python 3.14 with:
+#   fastapi 0.141.1, uvicorn 0.53.0, pydantic-settings 2.x,
+#   python-dotenv 1.2.3, pytest 9.1.1, httpx 0.28.1
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic-settings>=2.0,<3.0
+python-dotenv>=1.0,<2.0
+pytest>=8.0,<10.0
+httpx>=0.27,<1.0

@@ -1,0 +1,1 @@
+"""VoxSearch backend application package."""
