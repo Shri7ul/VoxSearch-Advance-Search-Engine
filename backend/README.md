@@ -6,10 +6,12 @@ FastAPI backend for VoxSearch.
 > and `GET /health` (Goal 02), a reproducible **standalone** Python 3.12
 > environment decoupled from Conda (Goals 03–04), a read-only Supabase /
 > PostgreSQL connection, the Alembic schema & migration foundation, and the
-> repository & service layers (Goals 05–08), plus the **validated transcript
+> repository & service layers (Goals 05–08), the **validated transcript
 > ingestion foundation** and its original-text persistence correction
-> (Goal 09). ASR, embeddings, reranking, and semantic search are **not**
-> implemented; Goal 09 stays limited to transcript processing foundations.
+> (Goal 09), and **deterministic multilingual sentence segmentation**
+> (Goal 10). ASR, chunking, embeddings, reranking, and semantic search are
+> **not** implemented; Goals 09–10 stay limited to transcript processing
+> foundations.
 
 ## Structure
 
@@ -196,6 +198,8 @@ The suite uses FastAPI's `TestClient` and covers:
 - Transcript input contract, validation, normalization, and atomic ingestion
   with real-session rollback, and separate original/normalized persistence
   (Goal 09).
+- Deterministic multilingual sentence segmentation: English / Bangla / mixed,
+  character-offset integrity, and segment-level timestamp provenance (Goal 10).
 
 From the repository root the full suite can be run with the standalone venv
 interpreter (no live Supabase connection is required):
@@ -254,6 +258,7 @@ and no HTTP routes were added (OpenAPI paths remain `/health` and `/health/db`).
 | `app/transcripts/contracts.py` | Pydantic 2 validated input contract + closed `TranscriptSource` set |
 | `app/transcripts/validation.py` | Cross-segment / contextual validation, overlap policy, duration bound |
 | `app/transcripts/normalization.py` | Deterministic, multilingual-safe text normalization |
+| `app/transcripts/sentence_segmentation.py` | Deterministic multilingual sentence segmentation (Goal 10) |
 | `app/services/transcript_ingestion_service.py` | Atomic ingestion orchestration (ONE transaction) |
 | `migrations/versions/b5d2e8a14c7f_*` | Additive, DDL-only `original_text` column (Goal 09 corrective) |
 
@@ -376,7 +381,114 @@ SQL, and has **not** been applied to production.
 
 ---
 
+## 8. Goal 10 — Multilingual sentence segmentation
+
+A deterministic, **library-level** segmentation layer in
+`app/transcripts/sentence_segmentation.py`. It splits ONE source transcript
+segment's text into ordered sentence units and is intended as the INPUT to the
+future sentence-aware chunking / semantic-indexing pipeline (architecture §8,
+§23 step 2). It does **not** chunk, embed, align, rerank, search, download, or
+run workers. It is a pure function: no DB, no I/O, no credentials, no ML model,
+and no external NLP service.
+
+### Input / output contract
+
+`SentenceSegmentationInput` (Pydantic 2, `extra="forbid"`):
+`source_text` (verbatim), `source_segment_ref` (stable parent reference),
+`start_seconds` / `end_seconds` (float seconds, matching the persisted
+columns), `language`. It reuses Goal 09's `_finite_float` (strict numeric
+validation, **not duplicated**) and rejects blank text / labels.
+
+`segment_sentences()` returns an ordered tuple of `Sentence` objects carrying:
+`text` (verbatim), `ordinal`, `char_start` / `char_end`, `source_segment_ref`,
+`source_segment_start_seconds` / `source_segment_end_seconds`, `language`,
+`timestamp_precision`, `exact_start_seconds` / `exact_end_seconds` (reserved),
+and `normalized_text` (a **separate** derived value produced by the existing
+`normalize_text`; it never replaces `text` and never affects offsets). The pure
+engine `find_sentence_spans()` is independently testable without the contract.
+
+### Segmentation algorithm & punctuation rules
+
+Sentence-ending punctuation: English `. ? !` and Bangla danda `।` (plus double
+danda `॥`). Mixed punctuation in one transcript is handled uniformly.
+
+A boundary is recognised only when punctuation is in a token's **trailing**
+run. Periods *inside* a token (`3.14`, `example.com`, `https://x.y`,
+`Dr.Rahman`, `v1.2.3`) are never candidates — the deterministic rule that
+avoids "split every period blindly". Known abbreviations (`Dr.`, `Prof.`,
+`etc.`, `Fig.`, `p.m.`), dotted acronyms (`U.S.`, `e.g.`, `Ph.D.`, `B.Sc.`),
+and single-letter initials in any script (`J.`, `ড.`) are not boundaries.
+Closing quotes / brackets after a boundary stay with the same sentence
+(`He said "Hi." Then left.`). Repeated punctuation (`!!!`, `?!`, `...`) is one
+boundary; a standalone punctuation-only token creates no empty sentence.
+Text without terminal punctuation becomes one sentence. Blank input is
+**rejected** with `EmptySourceTextError` (explicit policy, no silent empty
+result). Sentences are never reordered; ordinals are stable and deterministic.
+
+### Timestamp precision strategy
+
+Goal 09 stores **segment-level** timestamps only, so no sentence timestamp is
+fabricated from character positions or sentence length. Every sentence keeps
+its parent reference and the parent's start/end timestamps **verbatim**, with
+`timestamp_precision = TimestampPrecision.SEGMENT_LEVEL`. There are NO
+`sentence_start_seconds` / `sentence_end_seconds` fields: the inherited window
+is never presented as an exact sentence boundary. Text offsets (`char_*`) and
+temporal offsets are separate concepts. `exact_start_seconds` /
+`exact_end_seconds` are reserved and ALWAYS `None` here; only a future
+word-level alignment goal (architecture §7.5) can derive exact boundaries and
+upgrade the precision to the reserved `WORD_ALIGNED` value. Nothing is
+interpolated, scaled, or proportionally divided by character count.
+
+### Character-offset integrity
+
+Segmentation operates on the ORIGINAL source string; offsets are Python code
+point indices into that untransformed string. `Sentence.text` is exactly
+`source_text[char_start:char_end]`. Spans **tile** the source: the first starts
+at 0, the last ends at `len(source_text)`, and each span starts where the
+previous ended, so `''.join(s.text for s in sentences) == source_text` — no
+character is dropped, no sentence silently disappears. Punctuation, Bangla
+Unicode, English technical terms, casing, and whitespace are preserved; no
+lowercasing, punctuation removal, or rewriting. Whitespace between sentences
+attaches to the following sentence; trailing whitespace merges into the last
+sentence (no whitespace-only phantom sentence).
+
+### No persistence, no migration
+
+The architecture (§9.1) lists `transcript_segments` as the timestamped
+sentence/segment table and `transcript_words` as OPTIONAL word-level alignment;
+it defines **no dedicated sentence table**. Sentences are therefore not
+persisted, no new table is created, the Goal 09 ingestion transaction is
+untouched, and **no Alembic migration** was added (the approved three-revision
+history is unchanged). This goal added **no dependencies**.
+
+### Known limitations
+
+Perfect segmentation is not guaranteed with deterministic rules. An
+abbreviation that genuinely ends a sentence under-splits; missing whitespace
+after a period (`Hello.World`) under-splits; an ellipsis used as a pause
+(`Wait... what?`) over-splits; quoted/direct-speech boundaries and
+language-specific orthography are heuristic. There is no language detection,
+no ML model, and no external NLP service. Only authorized transcript content
+may be passed to this layer. Exact sentence timestamps require future
+word-level alignment and are explicitly out of scope.
+
+---
+
 ## Validation performed
+
+### Goal 10 — multilingual sentence segmentation
+
+- Pre-flight: branch `main`, clean tree, `HEAD == origin/main ==
+  82b4f69d315d0e21ed10151c52bcc3eb2beeb1eb`, standalone Python 3.12.10 venv.
+- New segmentation tests: **79 passed**.
+- Full backend suite: **398 passed, 1 warning** (the single warning is the
+  pre-existing `StarletteDeprecationWarning` from `fastapi.testclient`, not
+  project code).
+- Health / DB / schema / ownership / corrective-migration tests: **105 passed**.
+- `python -m pip check` → `No broken requirements found.`
+- `git diff --check` clean; no `.env`, `.venv`, credentials, or lockfile in the
+  change set; **no new Alembic revision** (three approved revisions intact);
+  **no dependency changes**; OpenAPI paths unchanged (`/health`, `/health/db`).
 
 ### Goal 04 — standalone Python runtime (decoupled from Conda)
 
