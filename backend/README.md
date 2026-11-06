@@ -7,9 +7,9 @@ FastAPI backend for VoxSearch.
 > environment decoupled from Conda (Goals 03–04), a read-only Supabase /
 > PostgreSQL connection, the Alembic schema & migration foundation, and the
 > repository & service layers (Goals 05–08), plus the **validated transcript
-> ingestion foundation** (Goal 09). ASR, embeddings, reranking, and semantic
-> search are **not** implemented; Goal 09 stays limited to transcript
-> processing foundations.
+> ingestion foundation** and its original-text persistence correction
+> (Goal 09). ASR, embeddings, reranking, and semantic search are **not**
+> implemented; Goal 09 stays limited to transcript processing foundations.
 
 ## Structure
 
@@ -190,10 +190,12 @@ pytest -v
 The suite uses FastAPI's `TestClient` and covers:
 
 - `GET /health` / `GET /health/db` responses and application metadata.
-- SQLAlchemy models, Alembic migrations, and database health (Goals 05–07).
+- SQLAlchemy models, Alembic migrations, and database health (Goals 05–07,
+  plus the Goal 09 corrective migration).
 - Repository and service layers and transaction ownership (Goal 08).
 - Transcript input contract, validation, normalization, and atomic ingestion
-  with real-session rollback (Goal 09).
+  with real-session rollback, and separate original/normalized persistence
+  (Goal 09).
 
 From the repository root the full suite can be run with the standalone venv
 interpreter (no live Supabase connection is required):
@@ -253,6 +255,7 @@ and no HTTP routes were added (OpenAPI paths remain `/health` and `/health/db`).
 | `app/transcripts/validation.py` | Cross-segment / contextual validation, overlap policy, duration bound |
 | `app/transcripts/normalization.py` | Deterministic, multilingual-safe text normalization |
 | `app/services/transcript_ingestion_service.py` | Atomic ingestion orchestration (ONE transaction) |
+| `migrations/versions/b5d2e8a14c7f_*` | Additive, DDL-only `original_text` column (Goal 09 corrective) |
 
 Validation, normalization, and persistence are deliberately separated. The
 service composes the **existing** repository layer inside a single
@@ -273,9 +276,10 @@ caption source. Unknown fields are rejected (`extra="forbid"`), not discarded.
 `start_time`/`end_time` are strict: only real numeric values are accepted (no
 string coercion, no bools, no NaN/±Inf). Text is rejected if blank after
 trimming, but the **original text is preserved verbatim** (never trimmed in the
-contract). Optional `speaker` / `metadata` are accepted and surfaced in the
-ingestion result but **not persisted** — the `transcript_segments` table has no
-columns for them and adding a migration is out of scope for this foundation.
+contract) and is persisted in `original_text`. Optional `speaker` / `metadata`
+are accepted and surfaced in the ingestion result but **not persisted** — the
+`transcript_segments` table has no columns for them and adding those columns
+remains out of scope for this foundation.
 
 ### Validation rules & overlap policy
 
@@ -302,9 +306,24 @@ space, then trim. Punctuation, casing, and non-whitespace content are preserved;
 there is no lowercasing, ASCII folding, stemming, or language-specific logic, so
 Bangla, English, and mixed text are all safe. The function is pure,
 deterministic, and idempotent, and returns **both** `original` and `normalized`
-text. The ingestion service persists the normalized form into the existing
-`segment_text` column and keeps the original in the `IngestionResult`; storing a
-byte-exact original at rest would need a future schema column/migration.
+text. The ingestion service persists **both separately**: the verbatim original
+in the nullable `original_text` column and the normalized form in the existing
+`"text"` column (mapped to `segment_text`). `IngestionResult` still carries both
+values so callers need no re-query.
+
+### Corrective migration (`b5d2e8a14c7f`)
+
+The existing normalized `"text"` column keeps its meaning: still `NOT NULL`,
+still guarded by `ck_transcript_segments_text_nonempty`, and still the target of
+`search_segments_by_text`. The single additive Alembic revision adds **only**
+`original_text TEXT NULL` — DDL-only, with no `DEFAULT`, no `UPDATE`, no
+backfill, and no data rewrite. Rows created before it have
+`original_text = NULL`, an honest "not captured" marker: their verbatim
+original was never stored and cannot be reconstructed, so it is NOT fabricated
+by copying the normalized text. New rows always populate both values. Adding a
+nullable column with no default is a metadata-only operation on PostgreSQL 11+.
+This migration was reviewed as **offline SQL only** and has **not** been applied
+to production; doing so requires separate approval.
 
 ### Authorization (fail closed)
 
@@ -313,17 +332,31 @@ that video, and pass the existing `ContentRightsService.is_active` (rejects
 revoked, expired, not-yet-granted, inactive, or otherwise unauthorized records).
 Nothing is auto-authorized. The Goal 07 composite FK is the DB-level backstop.
 
-### Status lifecycle & atomicity
+### Status lifecycle & atomicity (Option A)
 
-The existing `status` column is reused — **no migration and no new status
-columns**. `processing` is set transiently when the asset is created;
-`completed` is set before the single commit and is the only status ever
-persisted on success; `failed` is an **outcome label, not a persisted row** —
-any failure (before or inside the transaction) leaves the database completely
-unchanged (zero assets, zero segments), which is the strongest "no partially
-persisted transcript data" guarantee. One `transaction()` wraps asset creation
-+ all segment inserts + the status update, so a mid-batch DB error rolls back
-the asset too.
+The existing `status` column is reused — **no new status columns, no separate
+jobs table, and no independent commits**. (The only migration in this
+corrective review is the additive `original_text` column, unrelated to status.)
+
+* `processing` is a **transient internal execution state**. It is set when the
+  asset row is created but is never committed: the single transaction commits
+  only after the status has been advanced to `completed`.
+* `completed` is the **only status ever persisted**, and only on success.
+* `failed` is an **outcome label, not a persisted row**. A failed ingestion
+  surfaces as a typed, credential-free exception plus a guaranteed, queryable
+  zero-row state (no asset, no segments).
+
+A durable `failed` row is fundamentally incompatible with an all-or-nothing
+transaction: a rolled-back row cannot carry a status, and persisting one would
+require an independent commit that weakens atomicity. Durable job / failure
+tracking therefore belongs to the background-processing job layer (roadmap
+Goals 39–42), not to this foundation.
+
+One `transaction()` wraps asset creation + all segment inserts + the status
+update, so a mid-batch DB error rolls back the asset too and **no partial
+segments survive**. Fail-closed authorization runs **before** any write, so an
+authorization failure can never create an unauthorized asset. This design
+introduces **no independent commits and does not weaken atomicity**.
 
 Repeated ingestion is allowed and deterministic: with no checksum / dedup key
 in the schema, each call creates a new independent asset (no silent dedup).
@@ -334,8 +367,12 @@ Checksum-based dedup is a future concern requiring schema support.
 No live PostgreSQL concurrency was tested (no isolated instance; production
 Supabase was not used). Real-session rollback behavior is verified against an
 isolated in-memory SQLite-compatible stand-in schema, plus a control test that
-reproduces the `PendingRollbackError` state machine. Original text and optional
-`speaker`/`metadata` are not persisted at rest.
+reproduces the `PendingRollbackError` state machine. Original text **is** now
+persisted verbatim in `original_text`; rows created before the corrective
+migration have `NULL` there (original never captured). Optional
+`speaker`/`metadata` input fields are still not persisted at rest (no schema
+columns exist). The corrective migration is DDL-only, was reviewed as offline
+SQL, and has **not** been applied to production.
 
 ---
 

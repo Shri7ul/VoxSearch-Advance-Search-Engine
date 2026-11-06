@@ -38,6 +38,7 @@ VERSIONS_DIR = MIGRATIONS_DIR / "versions"
 
 GOAL06_REVISION = "b3727ed7438a"
 GOAL07_REVISION = "fe7b2b8e5323"
+GOAL09_CORRECTIVE_REVISION = "b5d2e8a14c7f"
 GOAL07_FILENAME = f"{GOAL07_REVISION}_enforce_transcript_ownership_integrity.py"
 
 # Exact names verified live against pg_constraint before the migration was
@@ -365,15 +366,20 @@ def test_migration_revision_discovery() -> None:
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
     script = ScriptDirectory.from_config(cfg)
 
-    assert script.get_heads() == [GOAL07_REVISION]  # exactly one head
+    assert script.get_heads() == [GOAL09_CORRECTIVE_REVISION]  # exactly one head
 
     rev = script.get_revision(GOAL07_REVISION)
     assert rev is not None
     assert rev.down_revision == GOAL06_REVISION
-    assert rev.is_head is True
+    assert rev.is_head is False
+
+    corrective = script.get_revision(GOAL09_CORRECTIVE_REVISION)
+    assert corrective is not None
+    assert corrective.down_revision == GOAL07_REVISION
+    assert corrective.is_head is True
 
     assert [r.revision for r in script.walk_revisions()] == [
-        GOAL07_REVISION, GOAL06_REVISION,
+        GOAL09_CORRECTIVE_REVISION, GOAL07_REVISION, GOAL06_REVISION,
     ]
 
 

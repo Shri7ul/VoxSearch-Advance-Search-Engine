@@ -4,8 +4,9 @@ Services are tested with mocked repositories + a mocked ``Session`` so commit /
 rollback boundaries and fail-closed rules are verified without any database.
 No test opens a network / Supabase connection or inserts production data.
 
-Also includes regression tests proving the existing 93 tests' endpoints,
-metadata, schema, and migration history are unchanged by Goal 08.
+Also includes regression tests proving endpoints and metadata are unchanged,
+and that the Alembic history contains exactly the approved revisions (the
+Goal 09 corrective revision is the single new head).
 """
 import ast
 import uuid
@@ -492,6 +493,50 @@ def test_save_segment_with_owned_asset_commits(session: MagicMock) -> None:
     )
     # The video_id passed to the repository is the requested (validated) one.
     assert segments.create_segment.call_args.kwargs["video_id"] == vid
+    # The optional verbatim original defaults to NULL for existing raw callers.
+    assert segments.create_segment.call_args.kwargs["original_text"] is None
+    session.commit.assert_called_once_with()
+
+
+def test_save_segment_forwards_original_text(session: MagicMock) -> None:
+    """The incremental API can persist both values for a new segment."""
+    service, assets, segments, _rights = _transcript_service(session)
+    vid, aid = uuid.uuid4(), uuid.uuid4()
+    assets.get_asset_by_id.return_value = TranscriptAsset(
+        video_id=vid, content_right_id=uuid.uuid4(),
+        source_type="upload", language="en", status="pending",
+    )
+    service.save_segment(
+        video_id=vid, transcript_asset_id=aid,
+        start_seconds=0, end_seconds=5, segment_text="normalized",
+        original_text="  verbatim  ",
+    )
+    kwargs = segments.create_segment.call_args.kwargs
+    assert kwargs["segment_text"] == "normalized"
+    assert kwargs["original_text"] == "  verbatim  "
+    session.commit.assert_called_once_with()
+
+
+def test_save_segments_forwards_original_text_per_item(session: MagicMock) -> None:
+    """Batch path forwards each item's original_text (or None when absent)."""
+    service, assets, segments, _rights = _transcript_service(session)
+    vid, aid = uuid.uuid4(), uuid.uuid4()
+    assets.get_asset_by_id.return_value = TranscriptAsset(
+        video_id=vid, content_right_id=uuid.uuid4(),
+        source_type="upload", language="en", status="pending",
+    )
+    segments.create_segment.side_effect = [object(), object()]
+    service.save_segments(
+        video_id=vid, transcript_asset_id=aid,
+        segments=[
+            {"start_seconds": 0, "end_seconds": 2, "segment_text": "a",
+             "original_text": "  A  "},
+            {"start_seconds": 2, "end_seconds": 4, "segment_text": "b"},
+        ],
+    )
+    calls = segments.create_segment.call_args_list
+    assert calls[0].kwargs["original_text"] == "  A  "
+    assert calls[1].kwargs["original_text"] is None
     session.commit.assert_called_once_with()
 
 
@@ -689,16 +734,18 @@ def test_migration_head_and_history_unchanged() -> None:
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["fe7b2b8e5323"]
+    assert script.get_heads() == ["b5d2e8a14c7f"]
     assert [r.revision for r in script.walk_revisions()] == [
-        "fe7b2b8e5323", "b3727ed7438a",
+        "b5d2e8a14c7f", "fe7b2b8e5323", "b3727ed7438a",
     ]
 
 
-def test_no_new_migration_files_added() -> None:
+def test_migration_files_match_approved_set() -> None:
+    """Exactly the three approved revisions; no stray migration files."""
     versions = BACKEND_DIR / "migrations" / "versions"
     revisions = sorted(p.name for p in versions.glob("*.py"))
     assert revisions == [
         "b3727ed7438a_initial_voxsearch_schema.py",
+        "b5d2e8a14c7f_add_original_text_to_transcript_segments.py",
         "fe7b2b8e5323_enforce_transcript_ownership_integrity.py",
     ]

@@ -11,6 +11,10 @@ would require a schema change that is explicitly out of scope. There are no
 embeddings or vector operations here either. The filter is a parameterized
 SQLAlchemy expression (no SQL injection) and is documented so a later goal can
 replace it with real FTS once a migration introduces the supporting column.
+The separate ``original_text`` column (verbatim source) is intentionally NOT a
+search target and NOT indexed; search continues to use the normalized ``"text"``
+column so existing query semantics are unchanged.
+
 This repository never commits.
 """
 import uuid
@@ -33,8 +37,15 @@ class TranscriptSegmentRepository(BaseRepository):
         end_seconds: float,
         segment_text: str,
         language: str | None = None,
+        original_text: str | None = None,
     ) -> TranscriptSegment:
         """Insert a segment and flush (no commit).
+
+        ``segment_text`` is the NORMALIZED text (physical ``"text"`` column);
+        ``original_text`` is the optional verbatim source text (physical
+        ``"original_text"`` column, nullable). Callers that do not have an
+        original (e.g. the incremental API, or pre-migration data paths) leave
+        it ``None``. The two values are never combined or overwritten.
 
         The timestamps/text are validated in Python as defense in depth for the
         existing DB check constraints (start >= 0, end > start, non-empty text),
@@ -55,6 +66,7 @@ class TranscriptSegmentRepository(BaseRepository):
             start_seconds=start_seconds,
             end_seconds=end_seconds,
             segment_text=segment_text,
+            original_text=original_text,
             language=language,
         )
         self.session.add(segment)

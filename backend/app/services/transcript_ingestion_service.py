@@ -23,8 +23,8 @@ expired, not-yet-granted, inactive, or otherwise unauthorized records). No
 record is ever auto-created or auto-authorized. The Goal 07 composite FK is a
 second, database-level ownership guarantee.
 
-Processing status lifecycle (uses the existing ``status`` column, NO migration)
-------------------------------------------------------------------------------
+Processing status lifecycle (existing ``status`` column; NO status migration)
+-----------------------------------------------------------------------------
 * ``processing`` — set when the asset is created at the start of the atomic
   unit ("processing started"). It is TRANSIENT: never observable at rest,
   because the unit commits only after completion.
@@ -46,12 +46,22 @@ asset. Repeated ingestion is allowed and deterministic; it is NOT silently
 deduplicated. (Architecture §7.3 notes checksum-based dedup as a future
 concern requiring schema support — out of scope for this foundation.)
 
+Original vs normalized text (Goal 09 corrective)
+------------------------------------------------
+Each segment is persisted with BOTH values in separate columns: the verbatim
+original in ``original_text`` (never trimmed, NFC-composed, or rewritten) and
+the deterministic normalized form in the existing ``"text"`` column. The
+normalized column keeps its original meaning and remains the search target.
+The single additive migration introduces only the nullable ``original_text``
+column; it performs NO backfill (legacy rows keep NULL, an honest "not
+captured" marker) and NEVER overwrites existing data.
+
 Scope & safety
 --------------
 Nothing here downloads captions, calls ASR, embeds, reranks, or searches. No
 credentials, API keys, or database URLs are logged or returned. Optional
 ``speaker`` / ``metadata`` input fields are surfaced in the result but NOT
-persisted (no schema columns exist; a migration would be out of scope).
+persisted (no schema columns exist; adding them remains out of scope).
 """
 from __future__ import annotations
 
@@ -88,7 +98,11 @@ class VideoNotFoundError(VoxSearchServiceError):
 
 @dataclass(frozen=True)
 class IngestedSegment:
-    """One ingested segment, preserving BOTH original and normalized text."""
+    """One ingested segment, preserving BOTH original and normalized text.
+
+    Both values are also persisted separately (``original_text`` / ``"text"``);
+    this result object simply avoids a re-query for callers.
+    """
 
     index: int
     start_time: float
@@ -207,6 +221,7 @@ class TranscriptIngestionService:
                     start_seconds=seg.start_time,
                     end_seconds=seg.end_time,
                     segment_text=seg.normalized_text,
+                    original_text=seg.original_text,
                     language=contract.language,
                 )
             self.assets.update_asset_status(asset.id, COMPLETED_STATUS)

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import CheckConstraint, DateTime, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, Text, UniqueConstraint
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
@@ -35,7 +35,8 @@ EXPECTED_TABLES = {
 }
 REVISION_ID = "b3727ed7438a"  # Goal 06 initial schema
 GOAL07_REVISION = "fe7b2b8e5323"  # Goal 07 ownership integrity
-HEAD_REVISION = GOAL07_REVISION
+GOAL09_CORRECTIVE_REVISION = "b5d2e8a14c7f"  # Goal 09 corrective: original_text
+HEAD_REVISION = GOAL09_CORRECTIVE_REVISION
 
 
 def tbl(name: str):
@@ -196,12 +197,36 @@ def test_transcript_segment_column_rules() -> None:
     t = tbl("transcript_segments")
     assert {
         "id", "transcript_asset_id", "video_id", "start_seconds",
-        "end_seconds", "text", "language", "created_at", "updated_at",
+        "end_seconds", "text", "original_text", "language", "created_at",
+        "updated_at",
     } == set(t.c.keys())
     assert t.c.start_seconds.nullable is False
     assert t.c.end_seconds.nullable is False
     assert t.c.text.nullable is False
     assert t.c.language.nullable is True
+
+
+def test_original_text_column_is_nullable_text() -> None:
+    """The additive column is nullable TEXT with no default (legacy rows = NULL)."""
+    col = tbl("transcript_segments").c.original_text
+    assert isinstance(col.type, Text)
+    assert col.nullable is True
+    assert col.server_default is None
+    assert "original_text TEXT" in compiled_ddl("transcript_segments")
+    assert "original_text TEXT NOT NULL" not in compiled_ddl("transcript_segments")
+
+
+def test_normalized_text_column_keeps_its_meaning() -> None:
+    """The pre-existing normalized column is untouched: NOT NULL, still guarded."""
+    t = tbl("transcript_segments")
+    assert t.c.text.nullable is False
+    assert TranscriptSegment.segment_text.property.columns[0].name == "text"
+    checks = {
+        c.name: str(c.sqltext)
+        for c in t.constraints
+        if isinstance(c, CheckConstraint)
+    }
+    assert "btrim" in checks["ck_transcript_segments_text_nonempty"]
 
 
 def test_content_rights_authorization_fields() -> None:
@@ -246,7 +271,7 @@ def test_migration_revision_discovery() -> None:
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
     script = ScriptDirectory.from_config(cfg)
 
-    # Exactly one head (the Goal 07 migration).
+    # Exactly one head (the Goal 09 corrective migration).
     assert script.get_heads() == [HEAD_REVISION]
 
     goal06 = script.get_revision(REVISION_ID)
@@ -257,10 +282,15 @@ def test_migration_revision_discovery() -> None:
     goal07 = script.get_revision(GOAL07_REVISION)
     assert goal07 is not None
     assert goal07.down_revision == REVISION_ID
-    assert goal07.is_head is True
+    assert goal07.is_head is False
+
+    corrective = script.get_revision(GOAL09_CORRECTIVE_REVISION)
+    assert corrective is not None
+    assert corrective.down_revision == GOAL07_REVISION
+    assert corrective.is_head is True
 
     assert [r.revision for r in script.walk_revisions()] == [
-        GOAL07_REVISION, REVISION_ID,
+        GOAL09_CORRECTIVE_REVISION, GOAL07_REVISION, REVISION_ID,
     ]
 
 

@@ -516,6 +516,42 @@ def test_create_segment_fields(session: MagicMock) -> None:
     assert session.commit.call_count == 0
 
 
+def test_create_segment_persists_original_text_separately(
+    session: MagicMock,
+) -> None:
+    """Goal 09 corrective: verbatim original and normalized text are distinct."""
+    segment = TranscriptSegmentRepository(session).create_segment(
+        transcript_asset_id=uuid.uuid4(),
+        video_id=uuid.uuid4(),
+        start_seconds=1.5,
+        end_seconds=4.0,
+        segment_text="normalized",
+        original_text="  verbatim  original  ",
+        language="en",
+    )
+    assert segment.segment_text == "normalized"
+    assert segment.original_text == "  verbatim  original  "
+    assert "original_text" in TranscriptSegment.__table__.c
+    assert TranscriptSegment.__table__.c.original_text.nullable is True
+    session.flush.assert_called_once_with()
+    assert session.commit.call_count == 0
+
+
+def test_create_segment_without_original_text_defaults_to_none(
+    session: MagicMock,
+) -> None:
+    """Backward compatibility: raw/legacy callers get a NULL original."""
+    segment = TranscriptSegmentRepository(session).create_segment(
+        transcript_asset_id=uuid.uuid4(),
+        video_id=uuid.uuid4(),
+        start_seconds=0,
+        end_seconds=2,
+        segment_text="normalized legacy",
+    )
+    assert segment.segment_text == "normalized legacy"
+    assert segment.original_text is None
+
+
 @pytest.mark.parametrize(
     "start, end, text",
     [

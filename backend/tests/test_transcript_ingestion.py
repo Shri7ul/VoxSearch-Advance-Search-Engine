@@ -47,6 +47,7 @@ from app.repositories.content_rights_repository import ACTIVE_STATUS
 from app.services import ContentRightsNotEligibleError
 from app.services.transcript_ingestion_service import (
     COMPLETED_STATUS,
+    FAILED_STATUS,
     PROCESSING_STATUS,
     TranscriptIngestionService,
     VideoNotFoundError,
@@ -97,7 +98,10 @@ class _Segment(_Base):
     video_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    # Physical "text" column = NORMALIZED text; original_text = verbatim source
+    # (nullable, so legacy / raw-API rows with no original remain valid).
     segment_text: Mapped[str] = mapped_column(Text, nullable=False)
+    original_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     language: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     __table_args__ = (
@@ -167,7 +171,8 @@ class _SegmentRepo:
         self._first_start = None
 
     def create_segment(self, *, transcript_asset_id, video_id, start_seconds,
-                       end_seconds, segment_text, language=None):
+                       end_seconds, segment_text, language=None,
+                       original_text=None):
         self.calls += 1
         if self.calls == 1:
             self._first_start = start_seconds
@@ -179,7 +184,8 @@ class _SegmentRepo:
         seg = _Segment(
             transcript_asset_id=transcript_asset_id, video_id=video_id,
             start_seconds=effective_start, end_seconds=end_seconds,
-            segment_text=segment_text, language=language,
+            segment_text=segment_text, original_text=original_text,
+            language=language,
         )
         self.session.add(seg)
         self.session.flush()  # real flush -> real IntegrityError on violation
@@ -311,9 +317,13 @@ def test_orchestration_uses_one_transaction_and_status_lifecycle() -> None:
     assert session.rollback.call_count == 0
     assert assets.create_transcript_asset.call_args.kwargs["status"] == PROCESSING_STATUS
     assert assets.update_asset_status.call_args.args[1] == COMPLETED_STATUS
-    # normalized text is persisted; original is not lost (kept in the result).
+    # BOTH values are persisted SEPARATELY: normalized in segment_text, the
+    # verbatim original in original_text. The result object also carries both.
     assert [c.kwargs["segment_text"] for c in segments.create_segment.call_args_list] == [
         "hello", "world",
+    ]
+    assert [c.kwargs["original_text"] for c in segments.create_segment.call_args_list] == [
+        "  hello  ", "world",
     ]
 
 
@@ -333,15 +343,81 @@ def test_successful_ingestion_persists_asset_and_segments() -> None:
         assert assets[0].status == COMPLETED_STATUS
         assert assets[0].video_id == h.video_id
         assert assets[0].content_right_id == h.right_id
-        # Persisted text is the NORMALIZED form.
-        texts = [s.segment_text for s in sorted(segments, key=lambda x: x.start_seconds)]
+        ordered = sorted(segments, key=lambda x: x.start_seconds)
+        # Persisted "text" is the NORMALIZED form (its meaning is unchanged).
+        texts = [s.segment_text for s in ordered]
         assert texts == ["প্রথম বাক্য", "Second one."]
+        # The verbatim ORIGINAL is persisted SEPARATELY, string-for-string.
+        originals = [s.original_text for s in ordered]
+        assert originals == ["  প্রথম  বাক্য  ", "Second one."]
+        assert originals[0] != texts[0]  # genuinely two distinct values
         assert all(s.video_id == h.video_id for s in segments)
         assert all(s.transcript_asset_id == assets[0].id for s in segments)
         assert all(s.language == "bn" for s in segments)
-        # Ingestion result preserves BOTH original and normalized text.
+        # Ingestion result still preserves BOTH original and normalized text.
         assert result.segments[0].original_text == "  প্রথম  বাক্য  "
         assert result.segments[0].normalized_text == "প্রথম বাক্য"
+    finally:
+        h.close()
+
+
+# --- Real-session ingestion: original vs normalized persistence ---------------
+
+
+def test_original_text_persisted_verbatim_and_normalized_separately() -> None:
+    """Verbatim original (string-for-string) and normalized text are distinct.
+
+    Exercises tabs, NBSP, newlines, double spaces, and Bangla combining marks
+    to prove NO transformation is applied on the original's persistence path.
+    """
+    h = _Harness()
+    try:
+        original = "  \tপ্রথম\u00a0  বাক্য\n  "
+        result = h.ingest(h.payload(segments=[
+            {"start_time": 0, "end_time": 2.0, "text": original},
+        ]))
+        segs = h.fresh_segments()
+        assert len(segs) == 1
+        assert segs[0].original_text == original            # string-for-string
+        assert segs[0].segment_text == "প্রথম বাক্য"      # deterministic normalized
+        assert segs[0].original_text != segs[0].segment_text
+        assert result.segments[0].original_text == original
+        assert result.segments[0].normalized_text == "প্রথম বাক্য"
+    finally:
+        h.close()
+
+
+def test_original_text_survives_fresh_session_round_trip() -> None:
+    """Re-reading via a NEW Session returns the exact verbatim original."""
+    h = _Harness()
+    try:
+        original = "MiXeD\tCase  with  double  spaces"
+        h.ingest(h.payload(language="en", segments=[
+            {"start_time": 0, "end_time": 2.0, "text": original},
+        ]))
+        with h.Session() as s:
+            row = s.execute(select(_Segment)).scalars().one()
+        assert row.original_text == original
+        assert row.segment_text == "MiXeD Case with double spaces"
+    finally:
+        h.close()
+
+
+def test_legacy_row_without_original_remains_valid() -> None:
+    """A pre-migration / raw-API segment with NULL original stays valid."""
+    h = _Harness()
+    try:
+        with h.Session() as s:
+            s.add(_Segment(
+                transcript_asset_id=uuid.uuid4(), video_id=h.video_id,
+                start_seconds=0, end_seconds=2,
+                segment_text="normalized legacy", original_text=None,
+            ))
+            s.commit()
+        segs = h.fresh_segments()
+        assert len(segs) == 1
+        assert segs[0].segment_text == "normalized legacy"
+        assert segs[0].original_text is None
     finally:
         h.close()
 
@@ -351,6 +427,38 @@ def test_processing_status_is_transient_only_completed_persisted() -> None:
     try:
         h.ingest()
         assert {a.status for a in h.fresh_assets()} == {COMPLETED_STATUS}
+    finally:
+        h.close()
+
+
+def test_only_completed_status_is_ever_persisted() -> None:
+    """Option A: `completed` is the sole durable asset status; no jobs table."""
+    h = _Harness()
+    try:
+        result = h.ingest()
+        assert result.status == COMPLETED_STATUS
+        statuses = {a.status for a in h.fresh_assets()}
+        assert statuses == {COMPLETED_STATUS}
+        assert PROCESSING_STATUS not in statuses
+        assert FAILED_STATUS not in statuses
+    finally:
+        h.close()
+
+
+def test_no_failed_status_is_ever_written() -> None:
+    """`failed` is an outcome label, never a persisted row (no jobs table)."""
+    h = _Harness(segment_repo_kwargs={
+        "fail_on_index": 1,
+        "failure": RuntimeError("boom"),
+    })
+    try:
+        with pytest.raises(RuntimeError):
+            h.ingest()
+        # The asset that was to carry `processing` is rolled back entirely;
+        # there is no row left to hold a `failed` status.
+        assets = h.fresh_assets()
+        assert assets == []
+        assert all(a.status != FAILED_STATUS for a in assets)
     finally:
         h.close()
 
@@ -418,6 +526,21 @@ def test_cross_video_rights_are_rejected_with_no_writes() -> None:
         h.close()
 
 
+def test_authorization_failure_creates_no_unauthorized_asset() -> None:
+    """Fail-closed auth runs BEFORE any write: no asset in any status appears."""
+    h = _Harness(rights={"status": "revoked", "revoked_at": datetime(2025, 6, 1)})
+    try:
+        with pytest.raises(ContentRightsNotEligibleError):
+            h.ingest()
+        assert h.fresh_assets() == []
+        assert h.fresh_segments() == []
+        assert all(
+            a.status != FAILED_STATUS for a in h.fresh_assets()
+        )
+    finally:
+        h.close()
+
+
 # --- Real-session ingestion: invalid transcript ------------------------------
 
 
@@ -473,6 +596,26 @@ def test_repeated_ingestion_creates_distinct_assets_no_silent_dedup() -> None:
 
 
 # --- Real-session ingestion: DB failure & atomic rollback --------------------
+
+
+def test_failed_ingestion_is_observable_as_exception_and_zero_rows() -> None:
+    """Option A: failure = typed exception + queryable zero-row state.
+
+    There is no durable `failed` row by design (no jobs table); observability
+    comes from the raised exception and the guaranteed absence of any partial
+    asset / segment after the single atomic transaction rolls back.
+    """
+    h = _Harness(segment_repo_kwargs={
+        "fail_on_index": 2,
+        "failure": SQLAlchemyError("simulated mid-batch failure"),
+    })
+    try:
+        with pytest.raises(SQLAlchemyError):
+            h.ingest()
+        assert h.fresh_assets() == []      # no orphan / failed asset
+        assert h.fresh_segments() == []   # not even the first flushed segment
+    finally:
+        h.close()
 
 
 def test_db_failure_rolls_back_asset_and_all_segments() -> None:

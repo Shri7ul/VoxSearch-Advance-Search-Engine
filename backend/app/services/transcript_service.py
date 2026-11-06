@@ -105,8 +105,14 @@ class TranscriptService:
         end_seconds: float,
         segment_text: str,
         language: str | None = None,
+        original_text: str | None = None,
     ) -> TranscriptSegment:
-        """Validate asset ownership, then save one segment in one transaction."""
+        """Validate asset ownership, then save one segment in one transaction.
+
+        ``segment_text`` is the normalized text; ``original_text`` is the
+        optional verbatim source text (defaults to ``None`` so existing raw
+        callers are unaffected).
+        """
         self._require_asset_ownership(video_id, transcript_asset_id)
         with transaction(self._session):
             return self.segments.create_segment(
@@ -116,6 +122,7 @@ class TranscriptService:
                 end_seconds=end_seconds,
                 segment_text=segment_text,
                 language=language,
+                original_text=original_text,
             )
 
     def save_segments(
@@ -128,8 +135,9 @@ class TranscriptService:
         """Validate ownership once, then save many segments in ONE transaction.
 
         Each item supplies ``start_seconds``, ``end_seconds``, ``segment_text``
-        and optionally ``language``. All inserts share a single commit; a
-        failure in any one rolls back the whole batch.
+        and optionally ``language`` / ``original_text`` (the verbatim source).
+        All inserts share a single commit; a failure in any one rolls back the
+        whole batch.
         """
         self._require_asset_ownership(video_id, transcript_asset_id)
         with transaction(self._session):
@@ -141,6 +149,7 @@ class TranscriptService:
                     end_seconds=item["end_seconds"],
                     segment_text=item["segment_text"],
                     language=item.get("language"),
+                    original_text=item.get("original_text"),
                 )
                 for item in segments
             ]

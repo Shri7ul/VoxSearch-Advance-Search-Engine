@@ -231,6 +231,17 @@ class TranscriptSegment(Base):
     constraints enforce non-negative start, end strictly after start, and
     non-empty transcript text. The composite FK guarantees the referenced
     transcript asset belongs to this segment's ``video_id``.
+
+    Two text columns are deliberately kept separate (Goal 09 corrective):
+
+    * ``segment_text`` maps to the physical ``"text"`` column and stores the
+      NORMALIZED text. Its meaning is UNCHANGED since Goal 06: it remains the
+      search target and is still guarded by
+      ``ck_transcript_segments_text_nonempty``.
+    * ``original_text`` stores the verbatim source text. It is NULLABLE because
+      rows created before the corrective migration never captured an original;
+      NULL is an honest "not captured" marker and is NEVER backfilled from the
+      normalized text (that would fabricate an "original").
     """
 
     __tablename__ = "transcript_segments"
@@ -248,6 +259,9 @@ class TranscriptSegment(Base):
     start_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     end_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     segment_text: Mapped[str] = mapped_column("text", Text, nullable=False)
+    original_text: Mapped[str | None] = mapped_column(
+        "original_text", Text, nullable=True
+    )
     language: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

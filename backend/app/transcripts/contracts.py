@@ -19,7 +19,9 @@ Design decisions
   format; the persisted schema here is in seconds.)
 * **Original text is preserved verbatim**: the contract only *rejects* blank
   text; it never trims or rewrites it. Trimming / whitespace collapsing belongs
-  to the separate normalization layer, which returns a distinct value.
+  to the separate normalization layer, which returns a distinct value. The
+  ingestion service persists BOTH: the verbatim original in ``original_text``
+  and the normalized form in the existing ``"text"`` column.
 * ``speaker`` and ``metadata`` are OPTIONAL input fields (justified by the
   architecture's ``speaker_id`` and ASR quality/config metadata, §7.2/§7.4).
   Persistence policy: the current ``transcript_segments`` table has NO columns
