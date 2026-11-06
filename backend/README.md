@@ -2,10 +2,14 @@
 
 FastAPI backend for VoxSearch.
 
-> **Scope:** Application initialization, centralized settings, logging, and a
-> `GET /health` endpoint (Goal 02), on a reproducible **standalone** Python 3.12
-> environment decoupled from Conda (Goals 03–04). Supabase, PostgreSQL,
-> embeddings, transcript processing, and search are **not** implemented yet.
+> **Scope:** FastAPI application initialization, centralized settings/logging
+> and `GET /health` (Goal 02), a reproducible **standalone** Python 3.12
+> environment decoupled from Conda (Goals 03–04), a read-only Supabase /
+> PostgreSQL connection, the Alembic schema & migration foundation, and the
+> repository & service layers (Goals 05–08), plus the **validated transcript
+> ingestion foundation** (Goal 09). ASR, embeddings, reranking, and semantic
+> search are **not** implemented; Goal 09 stays limited to transcript
+> processing foundations.
 
 ## Structure
 
@@ -185,11 +189,21 @@ pytest -v
 
 The suite uses FastAPI's `TestClient` and covers:
 
-- `GET /health` returns HTTP 200.
-- The response contains the expected fields and payload.
-- Application metadata (title, version, description, API prefix) is correct.
+- `GET /health` / `GET /health/db` responses and application metadata.
+- SQLAlchemy models, Alembic migrations, and database health (Goals 05–07).
+- Repository and service layers and transaction ownership (Goal 08).
+- Transcript input contract, validation, normalization, and atomic ingestion
+  with real-session rollback (Goal 09).
 
-All four tests must pass.
+From the repository root the full suite can be run with the standalone venv
+interpreter (no live Supabase connection is required):
+
+```powershell
+.\backend\.venv\Scripts\python.exe -m pytest backend\tests -v
+.\backend\.venv\Scripts\python.exe -m pip check
+```
+
+`pip check` must report `No broken requirements found.`
 
 ## 6. Starting the FastAPI server
 
@@ -222,6 +236,106 @@ Expected `200 OK` response:
   "version": "0.1.0"
 }
 ```
+
+---
+
+## 7. Goal 09 — Transcript processing foundation
+
+A library-level transcript ingestion pipeline. It is a **foundation only**: no
+ASR, no caption downloading/scraping, no embeddings, no reranking, no search,
+and no HTTP routes were added (OpenAPI paths remain `/health` and `/health/db`).
+
+### Modules
+
+| File | Responsibility |
+| --- | --- |
+| `app/transcripts/contracts.py` | Pydantic 2 validated input contract + closed `TranscriptSource` set |
+| `app/transcripts/validation.py` | Cross-segment / contextual validation, overlap policy, duration bound |
+| `app/transcripts/normalization.py` | Deterministic, multilingual-safe text normalization |
+| `app/services/transcript_ingestion_service.py` | Atomic ingestion orchestration (ONE transaction) |
+
+Validation, normalization, and persistence are deliberately separated. The
+service composes the **existing** repository layer inside a single
+`transaction()`; it does not call `TranscriptService.create_transcript_asset()` /
+`save_segments()` because each of those owns a separate commit and would break
+all-or-nothing atomicity (documented technical reason in the module docstring).
+
+### Input contract
+
+`TranscriptInput`: `video_id`, `content_right_id`, `source_type`, `language`,
+`segments` (>= 1). Each `TranscriptSegmentInput`: `start_time`, `end_time`
+(seconds, float), `text`, optional `speaker`, optional `metadata`.
+`source_type` is a closed set — `creator_provided`, `licensed_transcript`,
+`user_uploaded`, `asr_generated` — mapping to the four authorized source
+priorities in the architecture (§7.1). There is **no** arbitrary YouTube
+caption source. Unknown fields are rejected (`extra="forbid"`), not discarded.
+
+`start_time`/`end_time` are strict: only real numeric values are accepted (no
+string coercion, no bools, no NaN/±Inf). Text is rejected if blank after
+trimming, but the **original text is preserved verbatim** (never trimmed in the
+contract). Optional `speaker` / `metadata` are accepted and surfaced in the
+ingestion result but **not persisted** — the `transcript_segments` table has no
+columns for them and adding a migration is out of scope for this foundation.
+
+### Validation rules & overlap policy
+
+Non-empty transcript; non-blank segment text; numeric finite timestamps;
+`start_time >= 0`; `end_time > start_time`; strictly increasing `start_time`
+across segments; every `end_time <= Video.duration_seconds` **when the duration
+is known** (skipped when `NULL`). Invalid data raises a clear `ValidationError`
+(Pydantic) or `TranscriptValidationError` (contextual, index-aware). Nothing is
+silently repaired, reordered, clamped, or dropped.
+
+**Overlap is allowed and preserved.** The architecture's word-level / forced
+alignment (§7) and ASR/caption exports commonly produce overlapping windows;
+rejecting them would discard legitimate alignment data. Overlapping segments
+(with distinct starts) are persisted verbatim. Strictly increasing (not merely
+non-decreasing) starts are required because the existing
+`uq_transcript_segments_asset_start` unique constraint forbids two segments of
+one asset sharing a start offset.
+
+### Normalization
+
+Unicode **NFC** composition (not NFKC, which could change meaning), then any run
+of Unicode whitespace (spaces, tabs, line breaks, NBSP) collapses to a single
+space, then trim. Punctuation, casing, and non-whitespace content are preserved;
+there is no lowercasing, ASCII folding, stemming, or language-specific logic, so
+Bangla, English, and mixed text are all safe. The function is pure,
+deterministic, and idempotent, and returns **both** `original` and `normalized`
+text. The ingestion service persists the normalized form into the existing
+`segment_text` column and keeps the original in the `IngestionResult`; storing a
+byte-exact original at rest would need a future schema column/migration.
+
+### Authorization (fail closed)
+
+Before any write: the video must exist; the content-right must exist, belong to
+that video, and pass the existing `ContentRightsService.is_active` (rejects
+revoked, expired, not-yet-granted, inactive, or otherwise unauthorized records).
+Nothing is auto-authorized. The Goal 07 composite FK is the DB-level backstop.
+
+### Status lifecycle & atomicity
+
+The existing `status` column is reused — **no migration and no new status
+columns**. `processing` is set transiently when the asset is created;
+`completed` is set before the single commit and is the only status ever
+persisted on success; `failed` is an **outcome label, not a persisted row** —
+any failure (before or inside the transaction) leaves the database completely
+unchanged (zero assets, zero segments), which is the strongest "no partially
+persisted transcript data" guarantee. One `transaction()` wraps asset creation
++ all segment inserts + the status update, so a mid-batch DB error rolls back
+the asset too.
+
+Repeated ingestion is allowed and deterministic: with no checksum / dedup key
+in the schema, each call creates a new independent asset (no silent dedup).
+Checksum-based dedup is a future concern requiring schema support.
+
+### Limitations
+
+No live PostgreSQL concurrency was tested (no isolated instance; production
+Supabase was not used). Real-session rollback behavior is verified against an
+isolated in-memory SQLite-compatible stand-in schema, plus a control test that
+reproduces the `PendingRollbackError` state machine. Original text and optional
+`speaker`/`metadata` are not persisted at rest.
 
 ---
 
