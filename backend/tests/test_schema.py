@@ -19,8 +19,11 @@ from app.db.models import (
     Base,
     Channel,
     ContentRight,
+    SourceAudioAsset,
+    TranscriptAlignmentRun,
     TranscriptAsset,
     TranscriptSegment,
+    TranscriptWord,
     Video,
 )
 
@@ -32,11 +35,16 @@ EXPECTED_TABLES = {
     "content_rights",
     "transcript_assets",
     "transcript_segments",
+    # Goal 12: word-alignment tables (additive).
+    "source_audio_assets",
+    "transcript_alignment_runs",
+    "transcript_words",
 }
 REVISION_ID = "b3727ed7438a"  # Goal 06 initial schema
 GOAL07_REVISION = "fe7b2b8e5323"  # Goal 07 ownership integrity
 GOAL09_CORRECTIVE_REVISION = "b5d2e8a14c7f"  # Goal 09 corrective: original_text
-HEAD_REVISION = GOAL09_CORRECTIVE_REVISION
+GOAL12_REVISION = "a7c2e9f4b1d8"  # Goal 12: word-alignment tables
+HEAD_REVISION = GOAL12_REVISION
 
 
 def tbl(name: str):
@@ -53,7 +61,7 @@ def test_schema_name() -> None:
     assert SCHEMA == "voxsearch"
 
 
-def test_all_five_tables_present() -> None:
+def test_all_tables_present() -> None:
     assert set(Base.metadata.tables) == {
         f"{SCHEMA}.{n}" for n in EXPECTED_TABLES
     }
@@ -71,6 +79,9 @@ def test_declarative_classes_registered() -> None:
         (ContentRight, "content_rights"),
         (TranscriptAsset, "transcript_assets"),
         (TranscriptSegment, "transcript_segments"),
+        (SourceAudioAsset, "source_audio_assets"),
+        (TranscriptAlignmentRun, "transcript_alignment_runs"),
+        (TranscriptWord, "transcript_words"),
     ):
         assert cls.__table__ is tbl(name)
 
@@ -109,6 +120,41 @@ EXPECTED_FK_EDGES = {
         ("video_id", "voxsearch.transcript_assets.video_id"),
         ("video_id", "voxsearch.videos.id"),
     },
+    # Goal 12: exact authorization / ownership lineage composite FKs.
+    "source_audio_assets": {
+        ("video_id", "voxsearch.videos.id"),
+        ("content_right_id", "voxsearch.content_rights.id"),
+        ("video_id", "voxsearch.content_rights.video_id"),
+    },
+    "transcript_alignment_runs": {
+        ("video_id", "voxsearch.videos.id"),
+        # §4 right-video FK (content_right_id, video_id) -> content_rights.
+        ("content_right_id", "voxsearch.content_rights.id"),
+        ("video_id", "voxsearch.content_rights.video_id"),
+        # §4 video-level + §6 exact-authorization-lineage asset/audio FKs.
+        ("transcript_asset_id", "voxsearch.transcript_assets.id"),
+        ("content_right_id", "voxsearch.transcript_assets.content_right_id"),
+        ("video_id", "voxsearch.transcript_assets.video_id"),
+        ("source_audio_asset_id", "voxsearch.source_audio_assets.id"),
+        ("content_right_id", "voxsearch.source_audio_assets.content_right_id"),
+        ("video_id", "voxsearch.source_audio_assets.video_id"),
+    },
+    "transcript_words": {
+        ("video_id", "voxsearch.videos.id"),
+        # §4 asset-level FK.
+        ("transcript_asset_id", "voxsearch.transcript_assets.id"),
+        ("video_id", "voxsearch.transcript_assets.video_id"),
+        # §4 exact segment ownership + §6 exact run ownership.
+        ("segment_id", "voxsearch.transcript_segments.id"),
+        ("transcript_asset_id", "voxsearch.transcript_segments.transcript_asset_id"),
+        ("video_id", "voxsearch.transcript_segments.video_id"),
+        ("alignment_run_id", "voxsearch.transcript_alignment_runs.id"),
+        (
+            "transcript_asset_id",
+            "voxsearch.transcript_alignment_runs.transcript_asset_id",
+        ),
+        ("video_id", "voxsearch.transcript_alignment_runs.video_id"),
+    },
 }
 
 
@@ -137,13 +183,21 @@ def test_unique_constraints() -> None:
         isinstance(c, UniqueConstraint) and c.name == "uq_videos_youtube_video_id"
         for c in tbl("videos").constraints
     )
-    seg_uq = [
-        c for c in tbl("transcript_segments").constraints
+    # Goal 12 added a second, additive UNIQUE to transcript_segments (the FK
+    # target for transcript_words). The original one is preserved unchanged.
+    seg_uq = {
+        c.name: set(c.columns.keys())
+        for c in tbl("transcript_segments").constraints
         if isinstance(c, UniqueConstraint)
-    ]
-    assert len(seg_uq) == 1
-    assert seg_uq[0].name == "uq_transcript_segments_asset_start"
-    assert set(seg_uq[0].columns.keys()) == {"transcript_asset_id", "start_seconds"}
+    }
+    assert seg_uq == {
+        "uq_transcript_segments_asset_start": {
+            "transcript_asset_id", "start_seconds"
+        },
+        "uq_transcript_segments_id_asset_video": {
+            "id", "transcript_asset_id", "video_id"
+        },
+    }
 
 
 def test_external_identifiers_are_unique_and_not_null() -> None:
@@ -256,6 +310,25 @@ EXPECTED_INDEXES = {
         "ix_transcript_assets_content_right_id",
     },
     "transcript_segments": {"ix_transcript_segments_video_id"},
+    # Goal 12: standalone indexes on the new tables. The partial UNIQUE index
+    # (uq_alignment_runs_current_success) is an Index object, not a
+    # UniqueConstraint, so it appears here too.
+    "source_audio_assets": {
+        "ix_source_audio_assets_video_id",
+        "ix_source_audio_assets_content_right_id",
+    },
+    "transcript_alignment_runs": {
+        "ix_alignment_runs_asset_created",
+        "ix_alignment_runs_status",
+        "ix_transcript_alignment_runs_video_id",
+        "ix_transcript_alignment_runs_audio_id",
+        "uq_alignment_runs_current_success",
+    },
+    "transcript_words": {
+        "ix_transcript_words_video_id",
+        "ix_transcript_words_segment_time",
+        "ix_transcript_words_alignment_run_id",
+    },
 }
 
 
@@ -271,7 +344,7 @@ def test_migration_revision_discovery() -> None:
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
     script = ScriptDirectory.from_config(cfg)
 
-    # Exactly one head (the Goal 09 corrective migration).
+    # Exactly one head (the Goal 12 word-alignment migration).
     assert script.get_heads() == [HEAD_REVISION]
 
     goal06 = script.get_revision(REVISION_ID)
@@ -287,10 +360,16 @@ def test_migration_revision_discovery() -> None:
     corrective = script.get_revision(GOAL09_CORRECTIVE_REVISION)
     assert corrective is not None
     assert corrective.down_revision == GOAL07_REVISION
-    assert corrective.is_head is True
+    assert corrective.is_head is False
+
+    goal12 = script.get_revision(GOAL12_REVISION)
+    assert goal12 is not None
+    assert goal12.down_revision == GOAL09_CORRECTIVE_REVISION
+    assert goal12.is_head is True
 
     assert [r.revision for r in script.walk_revisions()] == [
-        GOAL09_CORRECTIVE_REVISION, GOAL07_REVISION, REVISION_ID,
+        GOAL12_REVISION, GOAL09_CORRECTIVE_REVISION,
+        GOAL07_REVISION, REVISION_ID,
     ]
 
 

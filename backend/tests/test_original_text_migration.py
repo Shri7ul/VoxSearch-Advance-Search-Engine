@@ -36,6 +36,7 @@ VERSIONS_DIR = MIGRATIONS_DIR / "versions"
 GOAL06_REVISION = "b3727ed7438a"
 GOAL07_REVISION = "fe7b2b8e5323"
 CORRECTIVE_REVISION = "b5d2e8a14c7f"
+GOAL12_REVISION = "a7c2e9f4b1d8"  # Goal 12 is now the single head
 CORRECTIVE_FILENAME = (
     f"{CORRECTIVE_REVISION}_add_original_text_to_transcript_segments.py"
 )
@@ -83,11 +84,13 @@ def test_single_head_and_linear_history() -> None:
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
     script = ScriptDirectory.from_config(cfg)
 
-    assert script.get_heads() == [CORRECTIVE_REVISION]
+    # Goal 12 is the single head; the corrective revision is no longer a head.
+    assert script.get_heads() == [GOAL12_REVISION]
     assert script.get_revision(CORRECTIVE_REVISION).down_revision == GOAL07_REVISION
-    assert script.get_revision(GOAL07_REVISION).is_head is False
+    assert script.get_revision(CORRECTIVE_REVISION).is_head is False
+    assert script.get_revision(GOAL12_REVISION).down_revision == CORRECTIVE_REVISION
     assert [r.revision for r in script.walk_revisions()] == [
-        CORRECTIVE_REVISION, GOAL07_REVISION, GOAL06_REVISION,
+        GOAL12_REVISION, CORRECTIVE_REVISION, GOAL07_REVISION, GOAL06_REVISION,
     ]
 
 
@@ -170,15 +173,26 @@ def test_normalized_text_column_keeps_meaning_and_constraints() -> None:
     assert "btrim" in checks["ck_transcript_segments_text_nonempty"]
 
 
-def test_exactly_five_tables_no_jobs_table() -> None:
-    """Option A: no separate jobs table, no new table of any kind."""
+def test_original_text_present_and_no_generic_jobs_table() -> None:
+    """Goal 09 Option A persists ``original_text`` on the segment itself.
+
+    Goal 09 added NO table; Goal 12 later added exactly three additive
+    word-alignment tables. There is still NO generic ``jobs`` /
+    ``processing_jobs`` table, and the verbatim ``original_text`` column lives
+    on ``transcript_segments`` (not in a separate table).
+    """
     assert set(Base.metadata.tables) == {
         f"{SCHEMA}.{n}"
         for n in (
             "channels", "videos", "content_rights",
             "transcript_assets", "transcript_segments",
+            "source_audio_assets", "transcript_alignment_runs",
+            "transcript_words",
         )
     }
+    assert not any(
+        "job" in t.name for t in Base.metadata.tables.values()
+    )
     assert "original_text" in tbl("transcript_segments").c
 
 

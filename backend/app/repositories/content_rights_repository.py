@@ -88,6 +88,25 @@ class ContentRightsRepository(BaseRepository):
         """Return a rights record by primary key, or ``None``."""
         return self.session.get(ContentRight, rights_id)
 
+    def get_rights_by_id_fresh(
+        self, rights_id: uuid.UUID
+    ) -> ContentRight | None:
+        """Return a rights record with attributes refreshed from the DB row.
+
+        ``populate_existing=True`` overrides the session identity map. Goal 12's
+        alignment service holds a long-lived session with
+        ``expire_on_commit=False``; a plain ``session.get()`` would return the
+        CACHED object and hide a rights revocation that happened during the
+        (out-of-transaction) provider call. This fresh read is used for the
+        Phase B authorization recheck. It is read-only and never commits.
+        """
+        stmt = (
+            select(ContentRight)
+            .where(ContentRight.id == rights_id)
+            .execution_options(populate_existing=True)
+        )
+        return self.session.scalars(stmt).first()
+
     def list_rights_by_video(
         self,
         video_id: uuid.UUID,

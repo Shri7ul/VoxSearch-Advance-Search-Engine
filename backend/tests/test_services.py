@@ -676,6 +676,7 @@ def test_commit_lives_only_in_the_shared_transaction_helper() -> None:
     for name in (
         "channel_service.py", "video_service.py",
         "content_rights_service.py", "transcript_service.py",
+        "transcript_ingestion_service.py", "word_alignment_service.py",
     ):
         assert _calls(svc_dir / name, "commit") == 0
         assert _calls(svc_dir / name, "rollback") == 0
@@ -689,6 +690,7 @@ def test_every_service_module_uses_transaction() -> None:
     for name in (
         "channel_service.py", "video_service.py",
         "content_rights_service.py", "transcript_service.py",
+        "transcript_ingestion_service.py", "word_alignment_service.py",
     ):
         tree = ast.parse((svc_dir / name).read_text(encoding="utf-8"))
         assert any(
@@ -734,17 +736,18 @@ def test_migration_head_and_history_unchanged() -> None:
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     cfg.set_main_option("script_location", str(BACKEND_DIR / "migrations"))
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["b5d2e8a14c7f"]
+    assert script.get_heads() == ["a7c2e9f4b1d8"]
     assert [r.revision for r in script.walk_revisions()] == [
-        "b5d2e8a14c7f", "fe7b2b8e5323", "b3727ed7438a",
+        "a7c2e9f4b1d8", "b5d2e8a14c7f", "fe7b2b8e5323", "b3727ed7438a",
     ]
 
 
 def test_migration_files_match_approved_set() -> None:
-    """Exactly the three approved revisions; no stray migration files."""
+    """Exactly the four approved revisions; no stray migration files."""
     versions = BACKEND_DIR / "migrations" / "versions"
     revisions = sorted(p.name for p in versions.glob("*.py"))
     assert revisions == [
+        "a7c2e9f4b1d8_add_word_alignment_tables.py",
         "b3727ed7438a_initial_voxsearch_schema.py",
         "b5d2e8a14c7f_add_original_text_to_transcript_segments.py",
         "fe7b2b8e5323_enforce_transcript_ownership_integrity.py",

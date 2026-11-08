@@ -107,3 +107,8 @@ Goal	কাজ	Achieve condition
 48	Monitoring	Logs + metrics
 49	Backup ও security	Recovery tested
 50	Compliance review ও launch	Public MVP ready
+
+## Goal status
+
+Goal 12 — Timestamp preservation: ACCEPTED.
+Goal 13 — Deterministic sentence-aware chunking: ACCEPTED.

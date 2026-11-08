@@ -1,0 +1,63 @@
+# VoxSearch Goal 12 — OPTIONAL, ISOLATED forced-alignment environment
+# =============================================================================
+# This file is DELIBERATELY SEPARATE from requirements.txt / requirements-lock.txt.
+#
+#   * DO NOT install these packages into backend/.venv (the core API runtime).
+#   * DO NOT merge this file into the core dependency set.
+#   * The core API imports NO torch / whisperx and runs without anything here.
+#   * WhisperX / PyTorch and their transitive tree are HEAVY (torch ~2.8.x,
+#     torchaudio, torchvision, ctranslate2, pyannote-audio, transformers, ...).
+#     They must live ONLY in a project-local, isolated interpreter that runs the
+#     standalone worker:  python -m alignment_worker.worker
+#
+# Provider gate ---------------------------------------------------------------
+# The stable pin is whisperx==3.8.6 (verified against its PyPI metadata):
+#   * final release, uploaded 2026-05-25
+#   * requires_python: ">=3.10, <3.14"  -> compatible with Python 3.12.10
+#   * align() accepts interpolate_method="ignore" and return_char_alignments=True
+#   * load_align_model / load_audio / align signatures match the adapter in
+#     backend/alignment_worker/worker.py
+#   * DEFAULT_ALIGN_MODELS_TORCH + DEFAULT_ALIGN_MODELS_HF define the supported
+#     language allowlist (Bengali bn/ben is NOT in either map)
+# Do NOT silently substitute another WhisperX version: the interpolation
+# behavior, char-alignment output shape, and language maps are version-specific.
+#
+# Contents --------------------------------------------------------------------
+# The exact pin plus whisperx==3.8.6's DECLARED direct requirements (its PyPI
+# `Requires-Dist` metadata / pyproject dependencies). This is a DECLARATION of
+# the version's dependency contract, NOT a fully-resolved transitive lock:
+# producing a real lock (pip-compile / pip freeze) requires resolving against a
+# package index and installing the tree, which is intentionally NOT done here
+# (no heavy deps are installed into any environment as part of this goal).
+#
+# Live provider execution / model-weight download is an OUTSTANDING, separately
+# approved verification step. The default test suite uses a FAKE provider.
+#
+# Isolated setup example (illustrative; NOT executed by this goal's tests)
+# -----------------------------------------------------------------------------
+#   python -m venv .venv-alignment
+#   .venv-alignment\Scripts\python.exe -m pip install -U pip
+#   .venv-alignment\Scripts\python.exe -m pip install -r requirements-alignment.txt
+#   # then launch the worker with that interpreter (see alignment_worker/client.py):
+#   # SubprocessAlignmentProvider(worker_python="<path>/.venv-alignment/Scripts/python.exe",
+#   #                            audio_path="<local authorized audio path>")
+# =============================================================================
+
+# --- Primary provider: exact stable pin --------------------------------------
+whisperx==3.8.6
+
+# --- whisperx==3.8.6 declared direct requirements (PyPI Requires-Dist) --------
+ctranslate2>=4.5.0
+faster-whisper>=1.2.0
+nltk>=3.9.1
+numpy>=2.1.0
+omegaconf>=2.3.0
+pandas>=2.2.3
+pyannote-audio>=4.0.0
+huggingface-hub<1.0.0
+torch~=2.8.0
+torchaudio~=2.8.0
+torchvision~=0.23.0
+torchcodec>=0.6.0,<0.8.0; (sys_platform == "linux" and platform_machine == "x86_64") or sys_platform == "darwin" or sys_platform == "win32"
+transformers>=4.48.0
+triton>=3.3.0; sys_platform == "linux" and platform_machine == "x86_64"

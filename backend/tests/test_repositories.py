@@ -690,11 +690,17 @@ def test_all_list_methods_have_id_tiebreaker(session: MagicMock) -> None:
 
 
 def test_importing_repository_layer_does_not_change_schema() -> None:
-    """Goal 08 must not add tables/columns; metadata stays the five tables."""
+    """Repositories add no schema: metadata matches the declared eight tables.
+
+    Goal 08 added none; Goal 12 added exactly three additive word-alignment
+    tables via the migration/models, not via the repository layer.
+    """
     assert set(Base.metadata.tables) == {
         f"{SCHEMA}.{n}"
         for n in (
             "channels", "videos", "content_rights",
             "transcript_assets", "transcript_segments",
+            "source_audio_assets", "transcript_alignment_runs",
+            "transcript_words",
         )
     }

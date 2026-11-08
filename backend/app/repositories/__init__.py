@@ -2,9 +2,10 @@
 
 Repositories are thin, stateless-per-request data-access objects built on
 SQLAlchemy 2.x ``select()`` queries. They translate well-defined operations into
-queries against the five existing ``voxsearch`` tables declared in
-``app.db.models``. They intentionally contain **no** schema, migration, or
-application-authorization logic.
+queries against the ``voxsearch`` tables declared in ``app.db.models`` (the five
+Goal 06/07 tables plus the three Goal 12 word-alignment tables). They
+intentionally contain **no** schema, migration, or application-authorization
+logic.
 
 Transaction ownership (Goal 08 contract)
 ----------------------------------------
@@ -38,8 +39,13 @@ from app.repositories.content_rights_repository import (
     REVOKED_STATUS,
     ContentRightsRepository,
 )
+from app.repositories.source_audio_asset_repository import SourceAudioAssetRepository
+from app.repositories.transcript_alignment_run_repository import (
+    TranscriptAlignmentRunRepository,
+)
 from app.repositories.transcript_asset_repository import TranscriptAssetRepository
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
+from app.repositories.transcript_word_repository import TranscriptWordRepository
 from app.repositories.video_repository import VideoRepository
 
 __all__ = [
@@ -51,7 +57,10 @@ __all__ = [
     "BaseRepository",
     "ChannelRepository",
     "ContentRightsRepository",
+    "SourceAudioAssetRepository",
+    "TranscriptAlignmentRunRepository",
     "TranscriptAssetRepository",
     "TranscriptSegmentRepository",
+    "TranscriptWordRepository",
     "VideoRepository",
 ]

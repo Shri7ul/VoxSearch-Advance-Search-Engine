@@ -2,7 +2,7 @@
 
 A YouTube-first semantic video search engine that retrieves **spoken-content segments** and returns **timestamped video links**. Instead of matching only video titles or descriptions, VoxSearch is designed to search inside what was actually said in a video and link directly to the moment in the video where a matching phrase occurs.
 
-> **Status:** Goal 01 — Repository Initialization. This repository currently contains only the project scaffolding (folder layout, documentation, and configuration templates). **No application features are implemented yet.** Everything described below as a feature or component is *planned* unless explicitly marked otherwise.
+> **Status:** The project has moved beyond initial scaffolding. Goals 01–13 foundations are implemented and version-controlled: a FastAPI backend, the `voxsearch` relational schema with four Alembic revisions, transcript ingestion / normalization / segmentation, word-level timestamp alignment (**Goal 12 — ACCEPTED**), and deterministic sentence-aware chunking (**Goal 13 — ACCEPTED**). Semantic search, embeddings, reranking, the search frontend, YouTube ingestion, background workers and deployment remain **planned**. See `progress.md` for the canonical numbered Goal tracker and `backend/README.md` for implementation detail.
 
 ---
 
@@ -40,13 +40,13 @@ The emphasis is on **finding the right moment inside a video**, not merely the r
 - **Evaluation tooling** — retrieval metrics (Recall@10, MRR, nDCG), timestamp accuracy, and latency benchmarks.
 - **Search frontend** — a web UI with result cards, timestamp links, and basic filters.
 
-> These features are **planned**. None are implemented at the Goal 01 stage.
+> Most of these features remain **planned**. The transcript processing pipeline (normalization, sentence segmentation, chunking, timestamp preservation) is now implemented (Goals 09–13); at the Goal 01 stage none were implemented.
 
 ---
 
 ## Planned technology stack
 
-> The stack below is **planned / indicative**, not yet configured or installed.
+> The stack below is **indicative of the target architecture**. Only the FastAPI / SQLAlchemy / psycopg / Alembic / pytest backend subset is currently configured and installed (see `backend/requirements.txt`); the remaining layers are planned.
 
 | Layer | Planned technology |
 | --- | --- |
@@ -61,7 +61,7 @@ The emphasis is on **finding the right moment inside a video**, not merely the r
 | Containerization / local dev | Docker, Docker Compose |
 | Monitoring | Logs and metrics (to be defined) |
 
-No packages, services, databases, or Supabase project are configured yet.
+Backend Python dependencies are pinned and installed in the standalone `backend/.venv` (Python 3.12.10), and the relational schema exists as SQLAlchemy models plus Alembic migrations. No live Supabase/PostgreSQL project, Redis, ML model, or production service is configured, and no production database has been migrated.
 
 ---
 
@@ -141,13 +141,13 @@ Empty directories are kept in version control using `.gitkeep` placeholder files
 
 ## Development roadmap
 
-The roadmap is tracked in phases; **only Goal 01 is in scope for the current commit**.
+The roadmap is tracked in phases; the canonical numbered Goal tracker is `progress.md`. The current commit finalizes Goals 12 and 13 (both ACCEPTED).
 
 | Phase | Goals | Focus | Status |
 | --- | --- | --- | --- |
-| Phase 1 — Project Foundation | 01–04 | Repo init, FastAPI setup, Next.js setup, Docker | **Goal 01 complete; 02–04 planned** |
-| Phase 2 — Database Foundation | 05–08 | PostgreSQL, pgvector, video & transcript tables | Planned |
-| Phase 3 — Transcript Processing | 09–13 | Normalization, segmentation, timestamps, chunking | Planned |
+| Phase 1 — Project Foundation | 01–04 | Repo init, FastAPI setup, Next.js setup, Docker | **01, 02 implemented; 03–04 planned** |
+| Phase 2 — Database Foundation | 05–08 | PostgreSQL, pgvector, video & transcript tables | **05, 07, 08 implemented; 06 (pgvector) planned** |
+| Phase 3 — Transcript Processing | 09–13 | Normalization, segmentation, timestamps, chunking | **09–11 implemented; 12–13 ACCEPTED** |
 | Phase 4 — Embedding Engine | 14–17 | BGE-M3, vector insert, cosine search | Planned |
 | Phase 5 — Semantic Search API | 18–21 | `/search` endpoint, query embedding, response schema | Planned |
 | Phase 6 — Hybrid Search | 22–25 | PostgreSQL FTS, dense + lexical, RRF, dedup | Planned |
@@ -164,20 +164,24 @@ The roadmap is tracked in phases; **only Goal 01 is in scope for the current com
 
 ## Current development status
 
-**Goal 01 — Repository Initialization** ✅
+**Goals 12 and 13 are ACCEPTED** (canonical tracker: `progress.md`). The repository now contains the FastAPI backend (`GET /health`, `GET /health/db`), the `voxsearch` relational schema with four Alembic revisions, the transcript ingestion / normalization / segmentation / word-alignment / chunking pipeline, and an offline test suite. Search, embeddings, reranking, the search frontend, YouTube ingestion, background workers and deployment remain planned. `backend/.env` is local-only and never committed; production Supabase has NOT been touched by Goals 12–13, and the pending migrations require separate explicit approval.
 
-Completed in this change:
+The section below is the **historical Goal 01 (Repository Initialization) record**, retained for traceability; it describes the initial scaffolding commit, not the current state.
+
+### Historical — Goal 01 — Repository Initialization ✅
+
+Completed in that change:
 
 - Monorepo directory structure with placeholder files.
 - `README.md` with project overview and roadmap.
 - `.gitignore` covering Python, Node/Next.js, secrets, ML artifacts, datasets, and local dev artifacts.
 - `.env.example` with placeholder variables only.
 
-Not yet done (intentionally out of scope for Goal 01):
+Intentionally out of scope for Goal 01 (since addressed in later goals, to the extent described above):
 
 - No backend, frontend, database tables, or Supabase configuration.
 - No ML models, workers, or API endpoints implemented.
 - No packages installed.
 - See `.env.example` for the configuration variables that will be needed later; copy it to `.env` and fill in real values only in a local, untracked environment.
 
-Do not treat any planned component as implemented. Work continues with Goal 02 and beyond in later sessions.
+Later goals cover the remaining roadmap phases (see `progress.md`).

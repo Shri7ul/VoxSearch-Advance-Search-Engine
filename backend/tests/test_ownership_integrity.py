@@ -29,7 +29,24 @@ from app.db.models import (
     FK_TRANSCRIPT_ASSETS_CONTENT_RIGHT_VIDEO,
     FK_TRANSCRIPT_SEGMENTS_ASSET_VIDEO,
     UQ_CONTENT_RIGHTS_ID_VIDEO_ID,
+    UQ_TRANSCRIPT_ASSETS_ID_RIGHT_VIDEO,
     UQ_TRANSCRIPT_ASSETS_ID_VIDEO_ID,
+    UQ_TRANSCRIPT_SEGMENTS_ID_ASSET_VIDEO,
+    UQ_SOURCE_AUDIO_ASSETS_ID_RIGHT_VIDEO,
+    UQ_ALIGNMENT_RUNS_ID_ASSET_VIDEO,
+    FK_SOURCE_AUDIO_ASSETS_VIDEO,
+    FK_SOURCE_AUDIO_ASSETS_CONTENT_RIGHT_VIDEO,
+    FK_ALIGNMENT_RUNS_VIDEO,
+    FK_ALIGNMENT_RUNS_RIGHT_VIDEO,
+    FK_ALIGNMENT_RUNS_ASSET_VIDEO,
+    FK_ALIGNMENT_RUNS_AUDIO_VIDEO,
+    FK_ALIGNMENT_RUNS_ASSET_RIGHT_VIDEO,
+    FK_ALIGNMENT_RUNS_AUDIO_RIGHT_VIDEO,
+    FK_TRANSCRIPT_WORDS_VIDEO,
+    FK_TRANSCRIPT_WORDS_SEGMENT_ASSET_VIDEO,
+    FK_TRANSCRIPT_WORDS_RUN_ASSET_VIDEO,
+    FK_TRANSCRIPT_WORDS_ASSET_VIDEO,
+    FK_TRANSCRIPT_WORDS_RUN_VIDEO,
 )
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -39,6 +56,7 @@ VERSIONS_DIR = MIGRATIONS_DIR / "versions"
 GOAL06_REVISION = "b3727ed7438a"
 GOAL07_REVISION = "fe7b2b8e5323"
 GOAL09_CORRECTIVE_REVISION = "b5d2e8a14c7f"
+GOAL12_REVISION = "a7c2e9f4b1d8"
 GOAL07_FILENAME = f"{GOAL07_REVISION}_enforce_transcript_ownership_integrity.py"
 
 # Exact names verified live against pg_constraint before the migration was
@@ -153,8 +171,10 @@ def test_composite_unique_ddl_is_emitted() -> None:
 
 
 def test_no_other_new_unique_constraints() -> None:
-    # Only the two required backing uniques were added; the Goal 06 uniques
-    # remain and no extras were introduced on unrelated tables.
+    # Goal 07 added exactly one backing unique to content_rights (unchanged).
+    # Goal 12 added ONE additive backing unique to transcript_assets (the FK
+    # target for alignment runs) and one to transcript_segments (the FK target
+    # for words). No OTHER uniques were introduced on unrelated tables.
     assert {
         c.name for c in tbl("content_rights").constraints
         if isinstance(c, UniqueConstraint)
@@ -162,7 +182,12 @@ def test_no_other_new_unique_constraints() -> None:
     assert {
         c.name for c in tbl("transcript_assets").constraints
         if isinstance(c, UniqueConstraint)
-    } == {UQ_TRANSCRIPT_ASSETS_ID_VIDEO_ID}
+    } == {UQ_TRANSCRIPT_ASSETS_ID_VIDEO_ID, UQ_TRANSCRIPT_ASSETS_ID_RIGHT_VIDEO}
+    seg_uqs = {
+        c.name for c in tbl("transcript_segments").constraints
+        if isinstance(c, UniqueConstraint)
+    }
+    assert UQ_TRANSCRIPT_SEGMENTS_ID_ASSET_VIDEO in seg_uqs
 
 
 # --- 2. Composite foreign key targets --------------------------------------
@@ -233,9 +258,28 @@ def test_old_single_column_fk_names_are_gone() -> None:
 
 
 def test_all_fk_constraint_names() -> None:
-    expected = {v[0] for v in PRESERVED_VIDEO_FKS.values()} | {
+    # Goal 07 FKs (preserved video FKs + the two composite ownership FKs) plus
+    # the thirteen Goal 12 composite/single-column ownership FKs on the new
+    # tables (2 source_audio_assets + 6 transcript_alignment_runs + 5
+    # transcript_words).
+    goal07 = {v[0] for v in PRESERVED_VIDEO_FKS.values()} | {
         FK_TRANSCRIPT_ASSETS_CONTENT_RIGHT_VIDEO,
         FK_TRANSCRIPT_SEGMENTS_ASSET_VIDEO,
+    }
+    goal12 = {
+        FK_SOURCE_AUDIO_ASSETS_VIDEO,
+        FK_SOURCE_AUDIO_ASSETS_CONTENT_RIGHT_VIDEO,
+        FK_ALIGNMENT_RUNS_VIDEO,
+        FK_ALIGNMENT_RUNS_RIGHT_VIDEO,
+        FK_ALIGNMENT_RUNS_ASSET_VIDEO,
+        FK_ALIGNMENT_RUNS_AUDIO_VIDEO,
+        FK_ALIGNMENT_RUNS_ASSET_RIGHT_VIDEO,
+        FK_ALIGNMENT_RUNS_AUDIO_RIGHT_VIDEO,
+        FK_TRANSCRIPT_WORDS_VIDEO,
+        FK_TRANSCRIPT_WORDS_SEGMENT_ASSET_VIDEO,
+        FK_TRANSCRIPT_WORDS_RUN_ASSET_VIDEO,
+        FK_TRANSCRIPT_WORDS_ASSET_VIDEO,
+        FK_TRANSCRIPT_WORDS_RUN_VIDEO,
     }
     actual = {
         c.name
@@ -243,7 +287,7 @@ def test_all_fk_constraint_names() -> None:
         for c in t.constraints
         if isinstance(c, ForeignKeyConstraint)
     }
-    assert actual == expected
+    assert actual == goal07 | goal12
 
 
 # --- 4. Constraint names / metadata sanity ---------------------------------
@@ -257,11 +301,14 @@ def test_four_new_constraint_names_are_exact() -> None:
     }
 
 
-def test_five_tables_only_and_schema_unchanged() -> None:
+def test_all_tables_only_and_schema_unchanged() -> None:
+    # Goal 12 added exactly three additive tables to the original five.
     assert set(Base.metadata.tables) == {
         f"{SCHEMA}.{n}" for n in (
             "channels", "videos", "content_rights",
             "transcript_assets", "transcript_segments",
+            "source_audio_assets", "transcript_alignment_runs",
+            "transcript_words",
         )
     }
     assert all(t.schema == SCHEMA for t in Base.metadata.tables.values())
@@ -366,7 +413,7 @@ def test_migration_revision_discovery() -> None:
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
     script = ScriptDirectory.from_config(cfg)
 
-    assert script.get_heads() == [GOAL09_CORRECTIVE_REVISION]  # exactly one head
+    assert script.get_heads() == [GOAL12_REVISION]  # exactly one head (Goal 12)
 
     rev = script.get_revision(GOAL07_REVISION)
     assert rev is not None
@@ -376,10 +423,16 @@ def test_migration_revision_discovery() -> None:
     corrective = script.get_revision(GOAL09_CORRECTIVE_REVISION)
     assert corrective is not None
     assert corrective.down_revision == GOAL07_REVISION
-    assert corrective.is_head is True
+    assert corrective.is_head is False
+
+    goal12 = script.get_revision(GOAL12_REVISION)
+    assert goal12 is not None
+    assert goal12.down_revision == GOAL09_CORRECTIVE_REVISION
+    assert goal12.is_head is True
 
     assert [r.revision for r in script.walk_revisions()] == [
-        GOAL09_CORRECTIVE_REVISION, GOAL07_REVISION, GOAL06_REVISION,
+        GOAL12_REVISION, GOAL09_CORRECTIVE_REVISION,
+        GOAL07_REVISION, GOAL06_REVISION,
     ]
 
 

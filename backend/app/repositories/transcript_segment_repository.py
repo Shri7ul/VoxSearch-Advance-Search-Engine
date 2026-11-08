@@ -113,6 +113,26 @@ class TranscriptSegmentRepository(BaseRepository):
         stmt = self.paginate(stmt, limit=limit, offset=offset)
         return list(self.session.scalars(stmt).all())
 
+    def list_all_segments_by_asset(
+        self, asset_id: uuid.UUID
+    ) -> list[TranscriptSegment]:
+        """Return ALL of an asset's segments in timestamp order (NO pagination).
+
+        Word alignment (Goal 12) must see the COMPLETE transcript, so it cannot
+        use the bounded :meth:`list_segments_by_asset` (whose ``limit`` is
+        clamped to ``MAX_LIMIT``). This is a read-only, unpaginated variant with
+        the same deterministic ``start_seconds ASC, id ASC`` ordering. Adding it
+        changes no existing method's behavior.
+        """
+        stmt = (
+            select(TranscriptSegment)
+            .where(TranscriptSegment.transcript_asset_id == asset_id)
+            .order_by(
+                TranscriptSegment.start_seconds.asc(), TranscriptSegment.id.asc()
+            )
+        )
+        return list(self.session.scalars(stmt).all())
+
     def search_segments_by_text(
         self,
         query: str,

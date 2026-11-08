@@ -8,10 +8,14 @@ FastAPI backend for VoxSearch.
 > PostgreSQL connection, the Alembic schema & migration foundation, and the
 > repository & service layers (Goals 05–08), the **validated transcript
 > ingestion foundation** and its original-text persistence correction
-> (Goal 09), and **deterministic multilingual sentence segmentation**
-> (Goal 10). ASR, chunking, embeddings, reranking, and semantic search are
-> **not** implemented; Goals 09–10 stay limited to transcript processing
-> foundations.
+> (Goal 09), **deterministic multilingual sentence segmentation** (Goal 10),
+> and **timestamp preservation through word-level forced alignment**
+> (Goal 12), and **deterministic, sentence-aware chunking** (Goal 13).
+> ASR, embeddings, reranking, and semantic search are **not** implemented.
+> Goals 09–13 stay limited to transcript processing foundations (no search,
+> no embeddings). Goal 12 is library-level: it adds no HTTP routes,
+> downloads no audio, installs no heavy dependency into the core venv, and
+> has been accepted but NOT applied to production (see §9 "Status").
 
 ## Structure
 
@@ -30,8 +34,8 @@ backend/
 ├── tests/
 │   └── test_health.py     # pytest suite
 ├── .venv/                 # standalone Python 3.12 venv (git-ignored, NOT committed)
-├── requirements.txt       # exact direct-dependency pins (6 packages)
-├── requirements-lock.txt  # fully resolved environment snapshot (29 packages)
+├── requirements.txt       # exact direct-dependency pins (9 packages)
+├── requirements-lock.txt  # fully resolved environment snapshot (37 packages)
 ├── pytest.ini
 ├── .env.example           # copy to .env (not committed)
 └── README.md
@@ -122,7 +126,7 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-`requirements.txt` pins the six direct dependencies exactly. Transitive
+`requirements.txt` pins the nine direct dependencies exactly. Transitive
 versions are resolved by pip:
 
 | Package | Pin |
@@ -131,13 +135,16 @@ versions are resolved by pip:
 | `uvicorn[standard]` | 0.54.0 |
 | `pydantic-settings` | 2.16.2 |
 | `python-dotenv` | 1.2.4 |
+| `sqlalchemy` | 2.0.57 |
+| `psycopg[binary]` | 3.2.13 |
+| `alembic` | 1.16.5 |
 | `pytest` | 9.2.0 |
 | `httpx` | 0.28.1 |
 
 ### Reproducible installation (fully resolved lock)
 
 `requirements-lock.txt` is a `pip freeze` snapshot of the exact, validated
-environment (29 packages). Use it to reproduce the environment without
+environment (37 packages). Use it to reproduce the environment without
 re-resolving transitive dependencies:
 
 ```powershell
@@ -149,8 +156,11 @@ pip install -r requirements-lock.txt
 > replace it with the lock file. Regenerate the lock from a clean venv with
 > `python -m pip freeze > requirements-lock.txt` whenever dependencies change.
 
-No ML packages, PyTorch, Transformers, Whisper, database drivers, or other
-future dependencies are included in this goal.
+No ML packages, PyTorch, Transformers, or Whisper are part of the core
+dependencies; the heavy alignment stack is declared separately in the optional
+`requirements-alignment.txt`. Database components ARE part of the core: the
+direct dependencies include the `psycopg[binary]` driver, SQLAlchemy, and
+Alembic.
 
 Verify integrity after either workflow:
 
@@ -200,6 +210,12 @@ The suite uses FastAPI's `TestClient` and covers:
   (Goal 09).
 - Deterministic multilingual sentence segmentation: English / Bangla / mixed,
   character-offset integrity, and segment-level timestamp provenance (Goal 10).
+- Goal 12 timestamp preservation: seconds/milliseconds conversion, audio/video
+  timeline offset, strict word/char corroboration, fail-closed timing, language
+  gate, two-phase rights/transaction/retry behavior, the additive migration,
+  and an opt-in (default-skipped) live WhisperX 3.8.6 integration tier. The
+  default suite uses a FAKE provider; no heavy ML dependencies or model
+  weights are required.
 
 From the repository root the full suite can be run with the standalone venv
 interpreter (no live Supabase connection is required):
@@ -474,7 +490,531 @@ word-level alignment and are explicitly out of scope.
 
 ---
 
+## 9. Goal 12 — Timestamp preservation (word-level alignment)
+
+Goal 12 upgrades transcript timestamps from **segment-level** to **exact,
+word-derived** timing using WhisperX 3.8.6 wav2vec2 forced alignment. It is a
+library-level, **fail-closed** foundation: no fabricated, interpolated,
+proportional, or character-offset-derived timestamps are ever persisted. It
+adds **no HTTP routes, no ASR, no audio downloading, no chunking**, and keeps
+the core API runtime free of `torch` / `whisperx`.
+
+> **Status:** **ACCEPTED** and committed on `main` in this change set, on the
+> accepted Goal 10 baseline. It has **NOT** been applied to production
+> Supabase, and the live real-weights WhisperX integration is an **outstanding,
+> separately-approved verification** (see "Known limitations"). The default
+> test suite uses a FAKE provider. Migration verification is offline DDL
+> rendering only; live PostgreSQL runtime enforcement remains unverified.
+
+### Architecture and data flow
+
+Four layers, with a strict pure/boundary split:
+
+| File | Responsibility |
+| --- | --- |
+| `app/transcripts/word_contract.py` | PURE primitives: unit conversion, language allowlist, deterministic tokenizer, `AlignedWord`, status/reason vocabulary |
+| `app/transcripts/word_alignment.py` | PURE preparation, request building, strict fail-closed validation, deterministic char reconstruction |
+| `app/transcripts/sentence_timestamps.py` | PURE `AlignedSentence` derivation (Goal 13 contract) |
+| `app/services/word_alignment_service.py` | Two-phase orchestration + atomic persistence (owns the transactions) |
+| `app/repositories/{source_audio_asset,transcript_alignment_run,transcript_word}_repository.py` | `flush()`-only data access for the three new tables |
+| `alignment_worker/worker.py` | ISOLATED process entry point; lazy `whisperx` imports; pinned adapter flags |
+| `alignment_worker/client.py` | `SubprocessAlignmentProvider`: explicit-argv subprocess launcher, controlled env, bounded JSON |
+| `migrations/versions/a7c2e9f4b1d8_*` | One additive, DDL-only Alembic migration (three new tables + ownership constraints) |
+| `requirements-alignment.txt` | OPTIONAL, isolated provider environment (heavy deps) |
+
+Data flow (two-phase lifecycle, retry + concurrency safe):
+
+```
+Phase A (DB txn)  video/asset/audio + SAME active right + language gate
+        -> create + COMMIT a `running` alignment run (durable/auditable)
+Pure preparation  original_text -> tokens, compute audio/video windows,
+        skip out-of-window / NULL-original segments (fail closed, no guessing)
+Provider (OUTSIDE any DB txn)  bounded AlignmentRequest -> isolated worker
+        (whisperx align, interpolate_method="ignore",
+         return_char_alignments=True) -> raw word/char JSON
+Pure validation    strict 1:1 ordinal mapping, finite timings, char
+        corroboration, window + monotonicity checks -> AlignedWord[]
+Phase B (DB txn)  recheck authorization fresh -> on success, in ONE txn:
+        supersede old current success + delete its words + insert new words
+        + set final status; on any failure, finalize THIS run as failed and
+        leave the previous success untouched
+```
+
+The worker receives **audio-timeline** seconds and the **verbatim** original
+text; all persisted word timestamps are converted to **video-timeline** integer
+milliseconds. A `ProviderCallable` protocol (`Callable[[dict], Mapping]`) keeps
+the core runtime decoupled: the default tests inject a fake, and the real
+provider runs in a separate interpreter.
+
+### Audio asset and word contracts
+
+**`SourceAudioAssetInput`** (Pydantic 2, `extra="forbid"`) registers an
+AUTHORIZED audio clip. Fields: `video_id`, `content_right_id`, an **opaque,
+non-secret** `storage_uri` (NEVER a URL / signed URL — those could leak into
+logs or the worker boundary), `checksum_sha256` (64 lowercase hex, verified by
+a DB CHECK), `mime_type`, `rights_basis`, optional `sample_rate_hz` (NULL =
+unknown, never guessed), `duration_ms` (the AVAILABLE audio window
+`[0, duration_ms]`, required positive on the authorized provisioning path),
+and `timeline_offset_ms` (the audio→video offset).
+
+**Persistence tables** (all in the `voxsearch` schema, UUID PKs, composite
+ownership FKs, additive):
+
+- `source_audio_assets` — authorized clip: storage/provenance columns above,
+  `timeline_offset_ms`, nullable `duration_ms` / `sample_rate_hz`.
+- `transcript_alignment_runs` — one attempt: `attempt_number`, `provider`
+  (`whisperx`), `provider_version` (`3.8.6`), `align_model_name`, `language`,
+  `status`, `segment_count` / `aligned_segment_count` /
+  `skipped_segment_count` / `word_count`, `audio_duration_ms`,
+  `failure_reason`, `started_at` / `finished_at`.
+- `transcript_words` — one validated word: `word_index` (0-based ordinal),
+  `char_start` / `char_end` (verbatim original-text offsets), `word` (verbatim
+  token), `start_ms` / `end_ms` (integer ms, VIDEO timeline), with
+  `CHECK (start_ms >= 0)`, `CHECK (end_ms > start_ms)`, and
+  `UNIQUE (segment_id, word_index)`.
+
+An **`AlignedWord`** is only produced after strict validation: it carries
+`segment_id`, `ordinal`, `text`, `char_start`, `char_end`, and VIDEO-timeline
+`start_ms` / `end_ms`. The provider's word list must map **1:1, in order, with
+exact token text** onto the original-text token stream; any count or text
+mismatch skips the **ENTIRE** segment (zero words), never a partial or
+re-indexed subset. Because WhisperX 3.8.6 final char dicts omit `word-idx`,
+`reconstruct_word_chars()` deterministically rebuilds per-word char evidence
+from the `chars` array (space separators ignored); missing/NaN char timings
+fail closed with no backfill.
+
+### Seconds / milliseconds conversion
+
+Existing `transcript_segments` timestamps stay **float SECONDS** (contracts
+unchanged). New Goal 12 word timestamps are **INTEGER MILLISECONDS**
+(`BIGINT`). The two units meet only at explicit conversion boundaries in
+`word_contract.py`:
+
+- `seconds_to_ms(seconds)` uses `Decimal(str(seconds)) * 1000` and
+  `ROUND_HALF_UP` (NOT `round()`'s banker's rounding), rejecting bool / str /
+  `None` / NaN / ±Inf / negatives.
+- `ms_to_seconds(ms)` accepts only a real non-negative `int`.
+
+Integer milliseconds are a **representation choice, NOT a claim of 1 ms
+measurement accuracy** — converting a seconds float quantizes it.
+
+### Audio / video timeline offset
+
+An authorized audio asset may be a clip offset from the video timeline:
+
+```
+video_timestamp_ms = audio_timestamp_ms + timeline_offset_ms
+audio_segment_start_ms = video_segment_start_ms - timeline_offset_ms
+audio_segment_end_ms   = video_segment_end_ms   - timeline_offset_ms
+```
+
+WhisperX receives AUDIO-timeline timestamps; persisted words are shifted back
+to the VIDEO timeline. `prepare_segments()` skips (with a closed reason) any
+segment whose audio window `[video_ms - offset, ...]` falls outside the
+available audio window `[0, duration_ms]`; it **never shifts, clamps, or
+guesses** a timestamp, and fails closed if audio/video synchronization cannot
+be established (NULL / empty duration).
+
+### Timestamp precision semantics
+
+Goal 10's `Sentence` contract is **UNCHANGED**: `exact_start_seconds` /
+`exact_end_seconds` remain `None` and are NEVER populated. Goal 12 introduces a
+separate `AlignedSentence` (in `sentence_timestamps.py`) with integer-ms
+`exact_start_ms` / `exact_end_ms` and a `precision`:
+
+- `SEGMENT_LEVEL` — inherited parent window only (Bengali / unaligned / any
+  partially covered sentence stays here, with both exact values `None`).
+- `WORD_ALIGNED` — set ONLY when **every** original token in the sentence span
+  has a valid aligned word; then `exact_start_ms = min(word.start_ms)`,
+  `exact_end_ms = max(word.end_ms)`.
+
+A word belongs to a sentence when its original-text `char_start` falls in that
+sentence's half-open `[char_start, char_end)` span. No interpolation,
+proportional division, or segment-window fallback is ever presented as an
+exact boundary.
+
+### Supported and unsupported languages
+
+WhisperX 3.8.6 wav2vec2 forced alignment is the single primary provider. The
+supported allowlist is transcribed from its exact `DEFAULT_ALIGN_MODELS_TORCH`
+(`en, fr, de, es, it`) + `DEFAULT_ALIGN_MODELS_HF` (`ja, zh, nl, uk, pt, ar,
+cs, ru, pl, hu, fi, fa, el, tr, da, he, vi, ko, ur, te, hi, ca, ml, no, nn,
+sk, sl, hr, ro, eu, gl, ka, lv, tl, sv, id`) maps. **Bengali** (`bn`, `ben`,
+`bn-BD`, `bn-IN`) and any unknown / unsupported / region-tagged code are
+rejected by the language gate with **ZERO provider calls, ZERO runs, and ZERO
+word rows**; Bengali remains `SEGMENT_LEVEL` and is deferred (with its
+evaluation dataset) to a future goal.
+
+### Rights checks and retry behavior
+
+Authorization is **fail closed and re-checked twice**:
+
+- **Phase A gate (read-only, no writes):** the video must exist; the transcript
+  asset and audio asset must exist, belong to the SAME video, and be
+  authorized by the SAME active `content_right_id` (the exact lineage is also
+  enforced at the DB level by composite FKs); the right must be active /
+  unexpired / unrevoked (`ContentRightsService.is_active`). An initial rights
+  or language rejection creates **NO alignment run**.
+- **Phase B recheck:** because the session uses `expire_on_commit=False`, a
+  **fresh** read (`populate_existing=True`) re-reads the right after the
+  out-of-transaction provider execution. If it was revoked meanwhile, the run
+  is finalized as `failed` / `rights_revoked` with ZERO new word rows and the
+  previous success preserved.
+
+Statuses (closed set): `pending`, `running`, `completed`, `partial`, `failed`,
+`unsupported_language`, `superseded` (`rejected_rights` is a reserved DB label
+never emitted for an initial gate rejection). `completed` = no skipped
+segments, `partial` = some skipped. A **partial UNIQUE index** permits at most
+one *current successful* (`completed` / `partial`) run per
+`(transcript_asset_id, source_audio_asset_id)`. On a **zero-word** result, the
+attempt fails and the previous success is left untouched. Only a **successful
+replacement** (in ONE transaction) may supersede the old run, delete its
+words, insert the new word set, and set the new final status. A concurrent
+winner (UNIQUE violation) is detected by re-querying and the losing run is
+finalized as `failed` / `superseded_by_concurrent_run`; genuine schema errors
+are re-raised, never hidden.
+
+### Optional alignment environment installation
+
+Heavy dependencies are **NEVER** added to `requirements.txt` /
+`requirements-lock.txt` or installed into `backend/.venv`. The core API,
+service, client, and worker modules import NO `torch` / `whisperx` at module
+load (verified by a clean-subprocess test). `requirements-alignment.txt` pins
+`whisperx==3.8.6` plus that release's declared direct requirements
+(`torch~=2.8.0`, `torchaudio`, `ctranslate2`, `transformers`, etc.) for a
+**separate, isolated interpreter**:
+
+```powershell
+python -m venv .venv-alignment
+.venv-alignment\Scripts\python.exe -m pip install -U pip
+.venv-alignment\Scripts\python.exe -m pip install -r requirements-alignment.txt
+```
+
+`SubprocessAlignmentProvider(worker_python=..., audio_path=...)` then launches
+`python -m alignment_worker.worker` with explicit argv, `shell=False`, a
+controlled env allowlist (no DB credentials / secrets forwarded), bounded JSON
+stdin/stdout, and a hard timeout. The worker re-validates the pinned flags
+(`interpolate_method="ignore"`, `return_char_alignments=True`) and rejects a
+URL / signed-URL `audio_path`. This setup is **illustrative** — no heavy
+dependency, model weight, or real audio is installed/downloaded by this goal's
+test suite.
+
+### Migration instructions
+
+One additive Alembic revision `a7c2e9f4b1d8` with
+`down_revision = "b5d2e8a14c7f"` adds the three tables, two additive UNIQUE
+constraints on existing tables (the referenced tuples required for the
+composite FKs), CHECK constraints, indexes, and the partial UNIQUE index. It
+is **DDL-only**: no INSERT / UPDATE / DELETE, no backfill, no column
+alteration, no rename; existing seconds columns, `original_text`, and all
+pre-existing rows are untouched. All objects live in the dedicated `voxsearch`
+schema. `downgrade()` reverses only what `upgrade()` created (child-first).
+
+There are two distinct review paths; they differ in whether `.env` is loaded.
+
+**Dedicated offline migration tests (do NOT load `.env`).**
+`tests/test_word_alignment_migration.py` configures a direct
+`MigrationContext(as_sql=True)` + `Operations` and calls the real
+`upgrade()` / `downgrade()` op functions, rendering PostgreSQL DDL to a
+buffer. It deliberately does NOT execute `migrations/env.py`, so it opens no
+DB connection, needs no credentials, and never calls `load_dotenv()` — `.env`
+is not read:
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests/test_word_alignment_migration.py -q
+```
+
+**Standard Alembic CLI (executes `env.py`, which loads `.env`).**
+`alembic upgrade head --sql` (offline) and `alembic upgrade head` (online)
+run through `migrations/env.py`, which calls `load_dotenv()` at import time.
+These commands therefore DO read `.env`. Use them only in an explicitly
+approved environment, and only after verifying that the intended
+`DATABASE_URL` is already set and correct for that environment. Never print,
+log, or inspect `.env` contents.
+
+The committed verification is **offline DDL rendering**: the dedicated
+migration tests call the real `upgrade()` / `downgrade()` operations through a
+`MigrationContext(as_sql=True)` and assert the upgrade / downgrade /
+re-upgrade sequence plus every ownership composite FK, additive UNIQUE, CHECK,
+index and partial-index definition. They open **no database connection**.
+
+**Live PostgreSQL runtime enforcement is NOT verified.** No isolated disposable
+PostgreSQL run is committed as evidence in this repository, and none is
+available in the current test environment (`psql` / `pg_ctl` / `docker` absent;
+no test-database URL configured). SQLite stand-ins used in service tests are a
+behavioural simulation and MUST NOT be substituted for PostgreSQL-specific
+constraint verification. Runtime enforcement of the composite FKs, additive
+uniques, CHECKs and the partial UNIQUE index therefore remains an outstanding
+verification. **`b5d2e8a14c7f` and `a7c2e9f4b1d8` MUST NOT be applied to
+production Supabase** without separate, explicit approval; the production
+database was NOT touched by this goal.
+
+### Known limitations
+
+- **Live WhisperX 3.8.6 / real-model-weights execution is OUTSTANDING.** The
+  `test_alignment_provider_integration.py` default tier launches the REAL
+  isolated worker against a controlled pure-Python `whisperx` double (no heavy
+  deps / weights / real audio). The opt-in `@pytest.mark.live_whisperx` tier
+  (real release + real authorized audio + cached weights) is **skipped by
+  default** and is NOT claimed to have run. The exact runtime shape of 3.8.6
+  char dicts can only be confirmed live; the pure reconstruction fails closed
+  if the assumption does not hold.
+- Integer milliseconds are a representation choice, not 1 ms accuracy.
+- Bengali alignment is unsupported in this goal.
+- A process crash between the Phase A commit and provider completion leaves a
+  stale `running` run; reaping is a future goal. Such rows carry no word rows
+  and never block a later successful attempt (excluded from the partial index).
+- `requirements-alignment.txt` is a dependency DECLARATION, not a resolved
+  transitive lock; producing a real lock requires installing the heavy tree.
+- Optional `speaker` / `metadata` transcript fields remain unpersisted.
+- Goal 12 is committed on `main` but has NOT been applied to production
+  Supabase; the two pending migrations require separate, explicit approval.
+- PostgreSQL runtime enforcement of the composite FKs / partial UNIQUE index /
+  CHECK constraints remains unverified (offline DDL assertions only).
+
+### Goal 13 integration contract
+
+Goal 13 (context-aware chunking) consumes Goal 12 through a **read-only**
+composition, `WordAlignmentService.get_aligned_sentences(alignment_run_id)`:
+it loads a successful run's word rows and the asset's segments, re-segments
+each segment's **verbatim** text with Goal 10 `segment_sentences`, tokenizes
+the original text, and calls `derive_aligned_sentences`. It returns
+`AlignedSentence` values (Goal 10 `Sentence` + `precision` +
+`exact_start_ms` / `exact_end_ms` in integer ms + `word_count`), upgrading to
+`WORD_ALIGNED` ONLY for fully covered sentences. It writes nothing, performs
+no interpolation, and NEVER populates Goal 10's `exact_start_seconds` /
+`exact_end_seconds`. Chunking must treat `SEGMENT_LEVEL` as an inherited
+window rather than an exact boundary. Goal 12 itself implements **no**
+chunking; Goal 13 consumes this contract as a separate goal.
+
+---
+
+## 10. Goal 13 — Sentence-aware, timestamp-preserving chunking
+
+Goal 13 groups consecutive sentences into deterministic **retrieval chunks**.
+It is a **pure, library-level** component (`app/transcripts/chunking.py`): no DB,
+no I/O, no clock, no credentials, no ML model, no embeddings, no summarization,
+and no rewrite/summary/paraphrase of transcript text. Chunk text is the verbatim
+concatenation of its sentences.
+
+> **Status:** **ACCEPTED** and committed on `main` in this change set. Pure
+> library-level: **no table, no migration, no embedding column, no dependency
+> change, no HTTP route**. It consumes Goal 12 `AlignedSentence` output
+> read-only and has NOT been applied to production. During final review one
+> diagnostic defect was found and fixed: an oversized first chunk with no
+> overlap context no longer reports the false
+> `overlap_trimmed_for_max_duration` diagnostic (regression test added).
+
+### Input (Goal 10 + Goal 12 composition)
+
+`chunk_sentences(aligned_sentences, *, parent=None, config=None)` consumes a
+sequence of `AlignedSentence` values — exactly the output of
+`WordAlignmentService.get_aligned_sentences(alignment_run_id)` described in §9.
+It runs **no alignment** and builds no second timestamp contract. Goal 10's
+`exact_start_seconds` / `exact_end_seconds` are never populated. For transcripts
+with no word alignment, `derive_aligned_sentences(sentences, (), ())` yields
+all-`SEGMENT_LEVEL` records that the chunker also accepts. The optional
+`parent` is a `ChunkParentContext` (see "Provenance" below); the pure primitive
+leaves it optional for backward compatibility, while `build_production_chunks`
+requires it.
+
+Word count uses the shared deterministic tokenizer
+`word_contract.tokenize_original`; it is NOT the `AlignedSentence.word_count`
+(that is the aligned-word count, zero for coarse sentences).
+
+### Configuration (`ChunkingConfig`, frozen Pydantic model)
+
+| Parameter | Default |
+|---|---:|
+| `target_duration_seconds` | 30.0 |
+| `min_duration_seconds` | 10.0 |
+| `max_duration_seconds` | 60.0 |
+| `overlap_seconds` | 5.0 |
+| `target_min_words` | 80 |
+| `target_max_words` | 150 |
+
+Validated at construction (finite/positive durations, `min <= target <= max`,
+`overlap < max`, `1 <= min_words <= max_words`, no unknown fields, strict int
+word counts). All thresholds flow from this single object; no magic numbers are
+scattered through the algorithm. Passing a custom config is deterministic.
+
+### Boundary-selection policy (deterministic)
+
+Starting at the next unassigned sentence, sentences are accumulated greedily:
+
+1. Sentences are never split, merged, reordered, or truncated. A single sentence
+   exceeding `target_max_words` (or, when fully exact, `max_duration`) stays a
+   one-sentence chunk (`single_sentence_exceeds_limits`) with a diagnostic.
+2. Cumulative word count `w` and reliable temporal extent `d` are tracked. The
+   60s `max_duration` is a hard cap **only for fully `WORD_ALIGNED` groups**.
+3. The target is reached at the first boundary where `w >= target_min_words`
+   OR (fully exact AND `d >= target_duration`). A **one-step lookahead** may add
+   one more sentence only if it keeps an exact group exact, stays within the
+   caps, and lowers a combined distance-to-targets score; ties stop earlier.
+4. Chunks are finalized at valid sentence boundaries; each evidence sentence
+   belongs to exactly one chunk. `boundary_reason` and `diagnostics` record the
+   decision and any unavoidable deviation (e.g. `target_min_words_unmet`,
+   `coarse_timestamp_precision`, `min_duration_unmet`).
+
+### Overlap policy (deterministic)
+
+Consecutive chunks share ~5s of overlap built from **complete sentences**: a
+suffix of the previous chunk's evidence, re-tagged `role="context"`. Context is
+never presented as new evidence (`evidence_start` separates them). Under fully
+exact precision the suffix closest to 5s is chosen (ties -> shorter); under
+coarse precision 5s is unmeasurable, so the honest bounded fallback is **one**
+trailing sentence (`overlap_coarse_precision`). Overlap preserves global
+sentence indices, IDs, and timestamps, never mutates source records, and is
+trimmed (`overlap_trimmed_for_max_duration`) rather than inflating a fully exact
+chunk past `max_duration`. That diagnostic is emitted **only when a context
+sentence was actually removed**; an oversized single-sentence chunk has no
+overlap context and never reports it.
+
+### Timestamp precision (no fabrication)
+
+* A chunk's `timestamp_precision` is the **minimum** precision across all its
+  sentences: any `SEGMENT_LEVEL` sentence downgrades the whole chunk.
+* `start_ms` / `end_ms` are the **union of the reliable source intervals**
+  (`[min start, max end]`), in integer ms via `seconds_to_ms`. There is NO
+  proportional split, interpolation, or character-offset timing. Per-sentence
+  precision and verbatim parent-seconds windows are preserved on each ref.
+* For a coarse/mixed chunk, duration thresholds (30/10/60/5s) **cannot be
+  enforced accurately** (an inherited parent window does not shrink as more of
+  its sentences are added). The algorithm falls back to word-count grouping and
+  records `coarse_timestamp_precision`; duration targets are best-effort. This
+  is documented, not silently weakened.
+
+### Data contract (`Chunk`, `ChunkSentence` — frozen dataclasses)
+
+`Chunk` carries `index`, verbatim `text`, ordered `sentences`, `start_ms` /
+`end_ms` / `duration_ms` (+ `*_seconds` properties), `timestamp_precision`,
+`word_count`, `evidence_start`, de-duplicated ordered `source_segment_refs`
+(evidence only), `boundary_reason`, `diagnostics`, `overlap_sentence_indices`,
+and the real parent provenance fields `video_id` / `transcript_asset_id` /
+`content_right_id` (from `ChunkParentContext`; `None` only on the pure
+optional-parent path). Each `ChunkSentence` preserves the global `index`,
+`role`, verbatim `text`, `language`, Goal 10 `ordinal` / `char_start` /
+`char_end`, `source_segment_ref`, per-sentence `timestamp_precision`, verbatim
+parent-seconds window, exact ms (only when word-aligned), and `word_count`, plus
+a derived `sentence_ref` property (below). Ordered `source_segment_refs` and
+per-sentence `source_segment_ref` preserve multi-segment provenance; context
+and evidence stay separated by `role` / `evidence_start`.
+
+### Provenance — real parent IDs, composed stable references
+
+A frozen, strictly validated `ChunkParentContext` carries the **real**
+`video_id` and `transcript_asset_id` (strict `uuid.UUID`, no coercion) from the
+existing Goal 09 `IngestionResult` / Goal 12 `TranscriptAlignmentRun` parent
+context; `content_right_id` is propagated only when already present as a real
+value (no new rights lookup). `from_ingestion_result()` / `from_alignment_run()`
+read those real fields verbatim — no ID is fabricated or derived from an
+unrelated field.
+
+- `chunk_sentences(..., parent=None, ...)` (pure primitive) accepts `parent`
+  optionally for backward compatibility.
+- `build_production_chunks(..., parent=<required>, ...)` is the production
+  composition wrapper: `parent` is a required keyword argument, must be a valid
+  `ChunkParentContext`, and the wrapper **fails closed** if any produced chunk
+  lacks the exact parent IDs. Production chunks can never silently omit
+  `video_id` / `transcript_asset_id`.
+
+`ChunkSentence.sentence_ref` is a deterministic **derived property** composed
+from immutable `source_segment_ref` + `ordinal` + `char_start` + `char_end`
+(format `source_segment_ref:ordinal:char_start:char_end`). **No sentence UUID is
+invented.** Because overlap/context occurrences are built from the same
+immutable sentence data, a sentence has the identical `sentence_ref` whether it
+appears as evidence or as overlap context in another chunk.
+
+There is no speaker identity and no persisted chunk identity (`chunk_id` /
+database id): `Chunk` has a 0-based `index` for order only. Empty input returns
+`()`.
+
+### Persistence decision
+
+Goal 13's acceptance criterion is "Context-aware chunks", a library-level
+deterministic grouping. Architecture §9.1's future `video_chunks` table is NOT
+implemented here: **no table, no migration, no embedding column, no new
+dependency** (core `requirements.txt` / `requirements-lock.txt` unchanged). The
+chunk dataclasses are pure value objects; a future indexing goal can persist
+them via its own additive migration. Invalid input is rejected by
+`validate_aligned_sentences` (no silent repair).
+
+### Tests
+
+`backend/tests/test_chunking.py` covers config validation, empty/single/
+repeated/Unicode-Bangla input, English abbreviations/URLs/decimals via Goal 10
+regression, Goal 10+12 word-aligned integration, coarse/mixed/exact precision,
+one-segment-multiple-sentences, multiple/duplicate segment refs, max-size
+handling, 30s target / 60s cap, complete-sentence overlap (5s, closest-valid,
+trimming), evidence/context separation, determinism, and non-monotonic/invalid
+timestamp rejection — plus real parent-ID propagation, strict
+`ChunkParentContext` validation, production-path rejection of missing/invalid
+parent, deterministic `sentence_ref`, identical refs for context/evidence
+overlap, multi-segment provenance, pure-primitive backward compatibility, and
+algorithm invariance when parent context is supplied.
+`test_oversized_first_chunk_reports_no_overlap_trimmed_diagnostic` is the
+final-review regression test for the spurious-diagnostic defect described
+above.
+
+### Known limitations / diagnostic semantics
+
+- A chunk-level `start_ms` / `end_ms` / `duration_ms` / `word_count` is the
+  union over **context + evidence** sentences, not evidence-only. When overlap
+  exists, `start_ms` can precede the first evidence sentence. Per-sentence
+  exact intervals and verbatim parent-seconds windows remain available on each
+  `ChunkSentence`; nothing is interpolated.
+- The dedicated single-oversized-sentence return path emits
+  `single_sentence_exceeds_max_duration` / `single_sentence_exceeds_max_words`
+  instead of the generic `coarse_timestamp_precision` diagnostic. A coarse
+  oversized one-sentence chunk is still explicitly `SEGMENT_LEVEL`
+  (`timestamp_precision` is the authoritative signal).
+- Goal 13 adds no persistence; a future indexing goal owns the `video_chunks`
+  table, the embedding column, and its own additive migration.
+
+---
+
 ## Validation performed
+
+### Goal 12 + Goal 13 — finalization validation
+
+All commands use the standalone `backend/.venv/Scripts/python.exe` (Python
+3.12.10) and run from `backend/`. These are the results of the **fresh final
+validation run performed in this change set**, not historical records.
+
+- Goal 12-specific (6 files: `test_word_contract`,
+  `test_word_timestamp_validation`, `test_sentence_timestamps`,
+  `test_word_alignment_service`, `test_word_alignment_migration`,
+  `test_alignment_provider_integration`): **270 passed, 1 skipped**. The single
+  skip is the opt-in `@pytest.mark.live_whisperx` real-weights/real-audio tier
+  (not executed).
+- Goal 13-specific (`test_chunking.py`): **68 passed** (includes the final-review
+  regression test `test_oversized_first_chunk_reports_no_overlap_trimmed_diagnostic`).
+- Goal 09/10 regression (5 files: `test_transcript_validation`,
+  `test_transcript_normalization`, `test_transcript_ingestion`,
+  `test_sentence_segmentation`, `test_original_text_migration`): **161 passed**.
+- Migration upgrade/downgrade + schema/ownership (4 files:
+  `test_word_alignment_migration`, `test_original_text_migration`,
+  `test_schema`, `test_ownership_integrity`): **153 passed**. Offline DDL
+  rendering only — no live PostgreSQL connection.
+- Complete backend test suite: **754 passed, 1 skipped, 1 warning** (the warning
+  is the pre-existing `StarletteDeprecationWarning` from `fastapi.testclient`,
+  not project code).
+- Deterministic chunking subset (`-k determin`): **3 passed, 65 deselected**.
+- Provenance subset (`-k "provenance or parent or sentence_ref or production or
+  context"`): **21 passed, 47 deselected**.
+- Timestamp / mixed-precision subset (`-k "precision or timestamp or mixed"`):
+  **114 passed, 641 deselected, 1 warning**.
+- Import/export check: `app.transcripts.__all__` (56 names) and
+  `chunking.__all__` (23 names) fully resolvable; `chunk_sentences` and
+  `build_production_chunks` both exported — **OK**.
+- `python -m pip check` → `No broken requirements found.`
+- `git diff --check` → clean (LF/CRLF warnings on Windows are informational).
+
+**Not verified / not claimed:** live WhisperX 3.8.6 real-model-weights
+execution, live PostgreSQL runtime enforcement of the composite FKs / partial
+UNIQUE index / CHECK constraints (offline DDL rendering only; no disposable
+PostgreSQL is available in this environment), and any production Supabase
+migration. No coverage numbers are claimed.
 
 ### Goal 10 — multilingual sentence segmentation
 
