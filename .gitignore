@@ -226,6 +226,9 @@ __marimo__/
 
 # --- Python virtual environments & caches (reinforce the template above) ---
 .venv/
+# Goal 12 / Goal 14: isolated OPTIONAL heavy-ML interpreters (.venv-alignment,
+# .venv-embedding) are local, multi-GB, and must never be committed.
+.venv-*/
 __pycache__/
 *.py[cod]
 .pytest_cache/

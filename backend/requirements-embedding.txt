@@ -1,0 +1,68 @@
+# VoxSearch Goal 14 — OPTIONAL, ISOLATED BGE-M3 embedding environment
+# =============================================================================
+# DELIBERATELY SEPARATE from requirements.txt / requirements-lock.txt (core API)
+# and from requirements-alignment.txt (Goal 12). Heavy ML dependencies are NEVER
+# installed into backend/.venv, NEVER merged into the core dependency set, and
+# never added to the core test suite.
+#
+# Target model : BAAI/bge-m3
+# Dense dim    : 1024
+# Provider     : FlagEmbedding (BGEM3FlagModel)
+#
+# INSTALL (from backend/, using the isolated interpreter ONLY):
+#   python -m venv .venv-embedding
+#   .venv-embedding\Scripts\python.exe -m pip install -U pip
+#   .venv-embedding\Scripts\python.exe -m pip install -r requirements-embedding.txt \
+#       --extra-index-url https://download.pytorch.org/whl/cpu
+#
+#   >>> The --extra-index-url is REQUIRED: torch==2.9.1+cpu is a CPU-only wheel
+#   >>> published on the PyTorch CPU index, NOT on PyPI. Without it pip cannot
+#   >>> resolve torch==2.9.1+cpu. The fully resolved environment is captured in
+#   >>> requirements-embedding-lock.txt (generated with `pip freeze`).
+#
+# HARDWARE DETERMINATION (measured, not assumed — see backend/README.md Goal 14)
+#   OS            : Windows 11 Pro, 64-bit (AMD64)
+#   CPU           : AMD Ryzen 9 9900X, 12 cores / 24 logical processors, x86-64
+#   GPU           : AMD Radeon(TM) Graphics (integrated); NO NVIDIA GPU
+#   nvidia-smi    : not found | nvcc: not found | CUDA_VISIBLE_DEVICES: unset
+#   Python        : 3.12.10 (standalone CPython312), AMD64, WindowsPE
+#   => CPU-only PyTorch (+cpu) wheel is REQUIRED. No CUDA wheel, no CUDA
+#      toolkit, no GPU driver is installed or assumed.
+#
+# VERSION STRATEGY (why these pins, not simply "latest")
+#   FlagEmbedding 1.4.2 declares transformers<6.0.0,>=4.44.2. At selection time
+#   PyPI latest transformers is 5.22.2 and sentence-transformers 6.2.0 requires
+#   transformers>=5.0.0 / huggingface-hub>=1.3.0. BGE-M3's own cached
+#   config.json declares "transformers_version": "4.33.0" and BGEM3FlagModel is
+#   built on the transformers 4.x API. This goal therefore pins the LAST 4.x
+#   line (4.57.6) plus a mutually compatible 4.x-capable stack, instead of
+#   making an untested major-version jump for a model with a 4.x baseline.
+#   torch 2.9.1+cpu is the newest CPU-only wheel published for cp312/win_amd64
+#   on https://download.pytorch.org/whl/cpu at selection time.
+#   datasets 5.x requires huggingface-hub>=1.31 and is INCOMPATIBLE with the
+#   transformers-4.x pin huggingface-hub<1.0; datasets 3.6.0 is used instead.
+#
+# This file pins DIRECT dependencies. Resolved transitive versions are recorded
+# in requirements-embedding-lock.txt. No model weights are declared here; the
+# BAAI/bge-m3 weights are a separate, large, cache-resident artifact.
+# =============================================================================
+
+# --- Primary provider --------------------------------------------------------
+FlagEmbedding==1.4.2
+
+# --- Core model runtime (CPU) -------------------------------------------------
+torch==2.9.1+cpu
+transformers==4.57.6
+tokenizers==0.22.2
+huggingface-hub==0.36.0
+sentence-transformers==5.2.0
+sentencepiece==0.2.3
+safetensors==0.6.2
+numpy==2.2.6
+
+# --- FlagEmbedding 1.4.2 declared deps, pinned for a conflict-free 4.x stack --
+datasets==3.6.0
+accelerate==1.10.0
+peft==0.17.1
+ir-datasets==0.6.3
+protobuf==6.33.0

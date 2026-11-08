@@ -112,3 +112,4 @@ Goal	কাজ	Achieve condition
 
 Goal 12 — Timestamp preservation: ACCEPTED.
 Goal 13 — Deterministic sentence-aware chunking: ACCEPTED.
+Goal 14 — BGE-M3 installation & environment validation: ACCEPTED.

@@ -12,6 +12,10 @@ FastAPI backend for VoxSearch.
 > and **timestamp preservation through word-level forced alignment**
 > (Goal 12), and **deterministic, sentence-aware chunking** (Goal 13).
 > ASR, embeddings, reranking, and semantic search are **not** implemented.
+> Goal 14 (**ACCEPTED**) has prepared and validated an **isolated, CPU-only
+> BGE-M3 environment** (installation / smoke-test validation ONLY) in
+> `backend/.venv-embedding`; it adds no application code, no database objects,
+> and no embeddings (see §11).
 > Goals 09–13 stay limited to transcript processing foundations (no search,
 > no embeddings). Goal 12 is library-level: it adds no HTTP routes,
 > downloads no audio, installs no heavy dependency into the core venv, and
@@ -973,7 +977,221 @@ above.
 
 ---
 
+## 11. Goal 14 — BGE-M3 installation & environment validation
+
+> **Status: ACCEPTED** (implementation and validation reviewed and accepted;
+> recorded in `progress.md`).
+> This goal is **installation and environment validation ONLY**. It adds no
+> application code, no HTTP routes, no database objects, and no embeddings.
+> Embedding generation (Goal 15), vector persistence (Goal 16), similarity
+> search (Goal 17), hybrid retrieval / RRF / reranking / search API / frontend,
+> and any pgvector schema or migration are explicitly **out of scope** and
+> remain unimplemented. The heavy ML stack lives in a **separate, isolated
+> interpreter**; the core `backend/.venv` is untouched.
+
+### Hardware / environment assessment (measured, not assumed)
+
+| Item | Value |
+| --- | --- |
+| OS | Windows 11 Pro, 64-bit (AMD64 / WindowsPE), Build 26200 |
+| CPU | AMD Ryzen 9 9900X, 12 cores / 24 logical processors, x86-64 |
+| GPU | AMD Radeon(TM) Graphics (integrated); **no NVIDIA GPU** |
+| `nvidia-smi` / `nvcc` | not found |
+| `CUDA_VISIBLE_DEVICES` | unset |
+| Python | 3.12.10 (standalone CPython312), AMD64 |
+| Physical RAM | 15.06 GB total; free ~0.57 GB pre-install, 1.87 GB pre-smoke, 2.39 GB post-smoke |
+| Virtual memory | 40.21 GB total |
+| Disk | D: ~9.2 GB free before install, ~8.0 GB after; C: ~2.3 GB free |
+
+**Conclusion:** a **CPU-only** PyTorch (`+cpu`) wheel is required. No CUDA
+wheel, CUDA toolkit, or NVIDIA driver is installed or assumed. No `nvidia-*` /
+`triton` / `cuda*` wheels are present in the isolated env (verified via
+`pip list`), and `torch.cuda.is_available()` is `False`.
+
+### Dependency selection (why these pins, not "latest")
+
+The target model's own cached `config.json` declares
+`"transformers_version": "4.33.0"`, and `BGEM3FlagModel` is built on the
+transformers 4.x API. At selection time PyPI latest `transformers` is `5.22.2`,
+`sentence-transformers` 6.x requires `transformers>=5.0.0` /
+`huggingface-hub>=1.3.0`, and `datasets` 5.x requires
+`huggingface-hub>=1.31`. Rather than make an untested major-version jump for a
+4.x-era model, this goal pins the **last transformers 4.x line** with a
+mutually compatible 4.x-capable stack. `datasets==3.6.0` is used because 5.x is
+incompatible with the `huggingface-hub<1.0` pin that transformers 4.x requires.
+
+`FlagEmbedding==1.4.2` declares `transformers<6.0.0,>=4.44.2`; the chosen
+`transformers==4.57.6` satisfies that. Verified direct pins (see
+`requirements-embedding.txt`):
+
+```
+FlagEmbedding==1.4.2
+torch==2.9.1+cpu
+transformers==4.57.6
+tokenizers==0.22.2
+huggingface-hub==0.36.0
+sentence-transformers==5.2.0
+sentencepiece==0.2.3
+safetensors==0.6.2
+numpy==2.2.6
+datasets==3.6.0
+accelerate==1.10.0
+peft==0.17.1
+ir-datasets==0.6.3
+protobuf==6.33.0
+```
+
+`torch==2.9.1+cpu` is the newest CPU-only wheel for `cp312/win_amd64` on
+`https://download.pytorch.org/whl/cpu` at selection time. It is **not** on
+PyPI, so installation **requires** `--extra-index-url
+https://download.pytorch.org/whl/cpu`. No CUDA-specific wheels were selected.
+The fully resolved environment (57 packages) is captured in
+`requirements-embedding-lock.txt` (`pip freeze`); `python -m pip check` reports
+`No broken requirements found.`
+
+### Isolation
+
+- Core `requirements.txt`, `requirements-lock.txt`, and
+  `requirements-alignment.txt` (Goal 12) are **preserved unchanged**.
+- New `requirements-embedding.txt` (direct pins) +
+  `requirements-embedding-lock.txt` (resolved, 57 packages).
+- New isolated interpreter `backend/.venv-embedding` (`pyvenv.cfg`: Python
+  3.12.10, `include-system-site-packages = false`).
+- `.gitignore` gained `.venv-*/`; `git check-ignore -v
+  backend/.venv-embedding/pyvenv.cfg` → `.gitignore:231:.venv-*/`. The env is
+  **not** tracked.
+- Verified: `backend/.venv` (core) still has **no** `torch`, `transformers`,
+  `FlagEmbedding`, `numpy`, `sentencepiece`, or `tokenizers`; `python -m pip
+  check` there still reports `No broken requirements found.`
+- No global Python / PATH changes, no Conda env changes, no Git remote changes.
+
+### Model identity & configuration (official cached artifacts only)
+
+Source: local Hugging Face cache
+`~/.cache/huggingface/hub/models--BAAI--bge-m3` (official model card +
+configs). No values are invented.
+
+| Property | Value | Source |
+| --- | --- | --- |
+| Model ID | `BAAI/bge-m3` | model card |
+| Dense dimension | **1024** | `config.json` `hidden_size`; `1_Pooling/config.json` `word_embedding_dimension`; model-card table |
+| Architecture | `XLMRobertaModel` (`xlm-roberta`), 24 layers, 16 heads | `config.json` |
+| `vocab_size` | 250002 | `config.json` |
+| `max_position_embeddings` | 8194 | `config.json` |
+| Max sequence length | **8192 tokens** | `sentence_bert_config.json` `max_seq_length`; model card |
+| `torch_dtype` | `float32` | `config.json` |
+| declared `transformers_version` | 4.33.0 | `config.json` |
+| Pooling | CLS token, then L2 normalization | `1_Pooling/config.json`, `modules.json` (`2_Normalize`) |
+| Multi-functionality | dense + multi-vector (ColBERT) + sparse retrieval | model card |
+| Multi-linguality | > 100 working languages | model card |
+| Multi-granularity | short sentences up to 8192-token documents | model card |
+
+### Model cache & smoke-test decision
+
+Cache inspection: `MODEL CACHE FOUND`, total **4.3 GB**, two snapshots:
+
+- `snapshots/5617a9f6…/` — complete sentence-transformers layout:
+  `config.json`, `pytorch_model.bin` (2,271,145,830 bytes), `tokenizer.json`,
+  `sentencepiece.bpe.model`, `special_tokens_map.json`,
+  `tokenizer_config.json`, `1_Pooling/config.json`,
+  `sentence_bert_config.json`, `modules.json`, and the official `README.md`.
+- `snapshots/9a0624b8…/` — `model.safetensors` only (2,271,064,456 bytes).
+
+**Decision:** weights are present locally, so **no large download** was needed
+and no approval for an expensive download was required. A minimal **offline**
+inference smoke test was run against the complete snapshot with
+`HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`, dense-only, `max_length=32`,
+`batch_size=1`, `use_fp16=False`, `devices=["cpu"]`, `OMP_NUM_THREADS=4`.
+
+### Smoke-test results (fresh run in this change set)
+
+| # | Check | Result |
+| --- | --- | --- |
+| 1 | `BGEM3FlagModel` imports | OK |
+| 2 | Model loads (CPU, fp32) | OK (5.4 s) |
+| 3 | Tokenizer loads | OK (vocab 250002) |
+| 4 | Inference succeeds | OK (0.54 s) |
+| 5 | Dense shape exactly 1024 | `(1024,)` |
+| 6 | All finite — no NaN/Inf | True (min -0.147266 / max 0.211798) |
+| 7 | Repeated inference numerically consistent | max\|diff\| = **0** |
+
+Additional observations: L2 norm = `1.000000` (normalized dense output),
+process RSS = 2127 MB after load + 2 encodes, second encode 0.18 s, total wall
+~6.1 s. Hard assertions on shape / finiteness / determinism all passed →
+**SMOKE TEST: PASS (7/7)**.
+
+### Resource & performance report
+
+- Pre-smoke: physical RAM free 1.87 GB, virtual free 4.42 GB, D: 8.06 GB.
+- Post-smoke: physical RAM free 2.39 GB, virtual free 4.09 GB, D: 8.04 GB.
+  No disk growth and no resident leak; the smoke-test process exited cleanly.
+- The float32 CPU load fits in ~2.1 GB RSS with `OMP_NUM_THREADS=4`. This is a
+  **short-sequence smoke test**, NOT a throughput / latency benchmark. CPU
+  inference on 8192-token inputs, batch pipelines, or GPU acceleration are
+  unmeasured and out of scope. Available physical RAM is modest (~2 GB free at
+  rest), so sustained heavy inference may be memory-constrained.
+
+### Reproduction
+
+```powershell
+# from backend/
+python -m venv .venv-embedding
+.venv-embedding\Scripts\python.exe -m pip install -U pip
+.venv-embedding\Scripts\python.exe -m pip install -r requirements-embedding.txt --extra-index-url https://download.pytorch.org/whl/cpu
+.venv-embedding\Scripts\python.exe -m pip check
+.venv-embedding\Scripts\python.exe -m pip freeze > requirements-embedding-lock.txt
+```
+
+### Known limitations / not verified / explicitly not done
+
+- **No** production embedding generation, batch embedding pipeline, or
+  persistence.
+- **No** DB embedding columns, **no** `video_chunks` table, **no** pgvector /
+  HNSW / GIN / FTS objects, **no** Alembic migration, and **no** production
+  migration applied.
+- **No** cosine similarity search, hybrid retrieval, RRF, reranker, search
+  API, or frontend integration.
+- Goal 15 is **not started**.
+- `.env` was never read or exposed; no credentials or connection URLs are in
+  the change set; the Git remote was not modified; nothing is committed or
+  pushed for Goal 14 (all changes remain in the working tree for review).
+- Live long-sequence / 8192-token inference, GPU inference, and CPU throughput
+  benchmarking are not performed. Only the minimal dense-only CPU smoke test
+  above is claimed.
+
+---
+
 ## Validation performed
+
+### Goal 14 — BGE-M3 installation & environment validation
+
+Fresh validation in this change set. Isolated interpreter
+`backend/.venv-embedding/Scripts/python.exe` (Python 3.12.10).
+
+- `python -m pip check` → `No broken requirements found.`
+- Exact versions confirmed: `torch 2.9.1+cpu` (`torch.version.cuda is None`,
+  `torch.cuda.is_available() == False`), `transformers 4.57.6`,
+  `tokenizers 0.22.2`, `huggingface-hub 0.36.0`, `sentence-transformers
+  5.2.0`, `sentencepiece 0.2.3`, `safetensors 0.6.2`, `numpy 2.2.6`,
+  `datasets 3.6.0`, `accelerate 1.10.0`, `peft 0.17.1`, `FlagEmbedding
+  1.4.2`; `from FlagEmbedding import BGEM3FlagModel` → OK.
+- `pip list` → **no** `nvidia-*` / `triton` / `cuda*` wheels (CPU-only stack
+  confirmed).
+- Offline smoke test (`HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`, dense-only,
+  `max_length=32`): model loads, tokenizer loads, inference succeeds, dense
+  shape `(1024,)`, all finite (no NaN/Inf), repeated inference max\|diff\| =
+  `0` — **SMOKE TEST: PASS (7/7)**. Full detail in §11.
+- Core `backend/.venv` regression: `python -m pip check` → clean, no heavy ML
+  packages leaked in; full backend suite `754 passed, 1 skipped, 1 warning in
+  4.83s` (unchanged from the Goal 12/13 acceptance baseline). Goal 14 adds no
+  application code, so no test changes were required.
+- `git diff --check` → clean; `git check-ignore` confirms `.venv-embedding` is
+  ignored; `.env` not in change set; HEAD and `origin/main` unchanged
+  (`33f2126…`), nothing staged, nothing committed or pushed.
+
+**Not claimed:** any embedding generation, vector persistence, retrieval,
+migration, or production deployment; long-sequence / GPU / throughput
+benchmarking; live PostgreSQL runtime verification.
 
 ### Goal 12 + Goal 13 — finalization validation
 
