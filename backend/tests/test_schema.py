@@ -25,7 +25,9 @@ from app.db.models import (
     TranscriptSegment,
     TranscriptWord,
     Video,
+    VideoChunk,
 )
+from app.db.types import VectorType
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = BACKEND_DIR / "migrations"
@@ -39,12 +41,15 @@ EXPECTED_TABLES = {
     "source_audio_assets",
     "transcript_alignment_runs",
     "transcript_words",
+    # Goal 16: chunk + 1024-dim dense embedding persistence (additive).
+    "video_chunks",
 }
 REVISION_ID = "b3727ed7438a"  # Goal 06 initial schema
 GOAL07_REVISION = "fe7b2b8e5323"  # Goal 07 ownership integrity
 GOAL09_CORRECTIVE_REVISION = "b5d2e8a14c7f"  # Goal 09 corrective: original_text
 GOAL12_REVISION = "a7c2e9f4b1d8"  # Goal 12: word-alignment tables
-HEAD_REVISION = GOAL12_REVISION
+GOAL16_REVISION = "c9d4f1a6b2e3"  # Goal 16: video_chunks + vector(1024)
+HEAD_REVISION = GOAL16_REVISION
 
 
 def tbl(name: str):
@@ -82,6 +87,7 @@ def test_declarative_classes_registered() -> None:
         (SourceAudioAsset, "source_audio_assets"),
         (TranscriptAlignmentRun, "transcript_alignment_runs"),
         (TranscriptWord, "transcript_words"),
+        (VideoChunk, "video_chunks"),
     ):
         assert cls.__table__ is tbl(name)
 
@@ -154,6 +160,14 @@ EXPECTED_FK_EDGES = {
             "voxsearch.transcript_alignment_runs.transcript_asset_id",
         ),
         ("video_id", "voxsearch.transcript_alignment_runs.video_id"),
+    },
+    # Goal 16: composite ownership lineage + video-level cascade FK.
+    "video_chunks": {
+        ("video_id", "voxsearch.videos.id"),
+        ("transcript_asset_id", "voxsearch.transcript_assets.id"),
+        ("video_id", "voxsearch.transcript_assets.video_id"),
+        ("content_right_id", "voxsearch.content_rights.id"),
+        ("video_id", "voxsearch.content_rights.video_id"),
     },
 }
 
@@ -293,11 +307,17 @@ def test_content_rights_authorization_fields() -> None:
 
 
 def test_no_vector_columns() -> None:
-    # Out of scope: no embedding/vector columns anywhere.
-    for t in Base.metadata.tables.values():
-        for col in t.columns:
+    # Goal 16 introduces the ONLY vector/embedding column in the schema:
+    # video_chunks.embedding (vector(1024)). Every OTHER table remains free of
+    # embedding/vector columns; this protective assertion keeps its intent.
+    for name in EXPECTED_TABLES - {"video_chunks"}:
+        for col in tbl(name).columns:
             assert "vector" not in col.name.lower()
             assert "embedding" not in col.name.lower()
+    # Positive assertion: the single allowed vector column is the expected UDT.
+    embedding = tbl("video_chunks").c.embedding
+    assert isinstance(embedding.type, VectorType)
+    assert embedding.type.dim == 1024
 
 
 # --- 7. Indexes -------------------------------------------------------------
@@ -329,6 +349,8 @@ EXPECTED_INDEXES = {
         "ix_transcript_words_segment_time",
         "ix_transcript_words_alignment_run_id",
     },
+    # Goal 16: NO ANN / HNSW / IVFFlat index on the vector table (Goal 17).
+    "video_chunks": set(),
 }
 
 
@@ -344,7 +366,7 @@ def test_migration_revision_discovery() -> None:
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
     script = ScriptDirectory.from_config(cfg)
 
-    # Exactly one head (the Goal 12 word-alignment migration).
+    # Exactly one head (the Goal 16 video_chunks migration).
     assert script.get_heads() == [HEAD_REVISION]
 
     goal06 = script.get_revision(REVISION_ID)
@@ -365,10 +387,15 @@ def test_migration_revision_discovery() -> None:
     goal12 = script.get_revision(GOAL12_REVISION)
     assert goal12 is not None
     assert goal12.down_revision == GOAL09_CORRECTIVE_REVISION
-    assert goal12.is_head is True
+    assert goal12.is_head is False
+
+    goal16 = script.get_revision(GOAL16_REVISION)
+    assert goal16 is not None
+    assert goal16.down_revision == GOAL12_REVISION
+    assert goal16.is_head is True
 
     assert [r.revision for r in script.walk_revisions()] == [
-        GOAL12_REVISION, GOAL09_CORRECTIVE_REVISION,
+        GOAL16_REVISION, GOAL12_REVISION, GOAL09_CORRECTIVE_REVISION,
         GOAL07_REVISION, REVISION_ID,
     ]
 

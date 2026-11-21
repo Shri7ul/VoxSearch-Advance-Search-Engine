@@ -113,3 +113,5 @@ Goal	কাজ	Achieve condition
 Goal 12 — Timestamp preservation: ACCEPTED.
 Goal 13 — Deterministic sentence-aware chunking: ACCEPTED.
 Goal 14 — BGE-M3 installation & environment validation: ACCEPTED.
+Goal 15 — Embedding generation (1024-dimensional BGE-M3 dense embeddings): ACCEPTED.
+Goal 16 — Vector database insert (PostgreSQL + pgvector persistence for 1024-dimensional BGE-M3 embeddings): ACCEPTED. Live PostgreSQL/pgvector runtime round-trip verification remains pending because no local PostgreSQL/Docker runtime was available. Offline validation, compilation, mocked transaction testing and regression testing passed.

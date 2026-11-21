@@ -47,6 +47,9 @@ from app.db.models import (
     FK_TRANSCRIPT_WORDS_RUN_ASSET_VIDEO,
     FK_TRANSCRIPT_WORDS_ASSET_VIDEO,
     FK_TRANSCRIPT_WORDS_RUN_VIDEO,
+    FK_VIDEO_CHUNKS_VIDEO,
+    FK_VIDEO_CHUNKS_ASSET_VIDEO,
+    FK_VIDEO_CHUNKS_RIGHT_VIDEO,
 )
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -57,6 +60,7 @@ GOAL06_REVISION = "b3727ed7438a"
 GOAL07_REVISION = "fe7b2b8e5323"
 GOAL09_CORRECTIVE_REVISION = "b5d2e8a14c7f"
 GOAL12_REVISION = "a7c2e9f4b1d8"
+GOAL16_REVISION = "c9d4f1a6b2e3"
 GOAL07_FILENAME = f"{GOAL07_REVISION}_enforce_transcript_ownership_integrity.py"
 
 # Exact names verified live against pg_constraint before the migration was
@@ -258,10 +262,11 @@ def test_old_single_column_fk_names_are_gone() -> None:
 
 
 def test_all_fk_constraint_names() -> None:
-    # Goal 07 FKs (preserved video FKs + the two composite ownership FKs) plus
-    # the thirteen Goal 12 composite/single-column ownership FKs on the new
-    # tables (2 source_audio_assets + 6 transcript_alignment_runs + 5
-    # transcript_words).
+    # Goal 07 FKs (preserved video FKs + the two composite ownership FKs), the
+    # thirteen Goal 12 composite/single-column ownership FKs on the new tables
+    # (2 source_audio_assets + 6 transcript_alignment_runs + 5
+    # transcript_words), and the three Goal 16 ownership FKs on video_chunks
+    # (1 video-level cascade + 2 composite lineage FKs).
     goal07 = {v[0] for v in PRESERVED_VIDEO_FKS.values()} | {
         FK_TRANSCRIPT_ASSETS_CONTENT_RIGHT_VIDEO,
         FK_TRANSCRIPT_SEGMENTS_ASSET_VIDEO,
@@ -281,13 +286,18 @@ def test_all_fk_constraint_names() -> None:
         FK_TRANSCRIPT_WORDS_ASSET_VIDEO,
         FK_TRANSCRIPT_WORDS_RUN_VIDEO,
     }
+    goal16 = {
+        FK_VIDEO_CHUNKS_VIDEO,
+        FK_VIDEO_CHUNKS_ASSET_VIDEO,
+        FK_VIDEO_CHUNKS_RIGHT_VIDEO,
+    }
     actual = {
         c.name
         for t in Base.metadata.tables.values()
         for c in t.constraints
         if isinstance(c, ForeignKeyConstraint)
     }
-    assert actual == goal07 | goal12
+    assert actual == goal07 | goal12 | goal16
 
 
 # --- 4. Constraint names / metadata sanity ---------------------------------
@@ -302,13 +312,14 @@ def test_four_new_constraint_names_are_exact() -> None:
 
 
 def test_all_tables_only_and_schema_unchanged() -> None:
-    # Goal 12 added exactly three additive tables to the original five.
+    # Goal 12 added exactly three additive tables to the original five; Goal 16
+    # added exactly one more (video_chunks) => nine tables total.
     assert set(Base.metadata.tables) == {
         f"{SCHEMA}.{n}" for n in (
             "channels", "videos", "content_rights",
             "transcript_assets", "transcript_segments",
             "source_audio_assets", "transcript_alignment_runs",
-            "transcript_words",
+            "transcript_words", "video_chunks",
         )
     }
     assert all(t.schema == SCHEMA for t in Base.metadata.tables.values())
@@ -413,7 +424,7 @@ def test_migration_revision_discovery() -> None:
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
     script = ScriptDirectory.from_config(cfg)
 
-    assert script.get_heads() == [GOAL12_REVISION]  # exactly one head (Goal 12)
+    assert script.get_heads() == [GOAL16_REVISION]  # exactly one head (Goal 16)
 
     rev = script.get_revision(GOAL07_REVISION)
     assert rev is not None
@@ -428,10 +439,15 @@ def test_migration_revision_discovery() -> None:
     goal12 = script.get_revision(GOAL12_REVISION)
     assert goal12 is not None
     assert goal12.down_revision == GOAL09_CORRECTIVE_REVISION
-    assert goal12.is_head is True
+    assert goal12.is_head is False
+
+    goal16 = script.get_revision(GOAL16_REVISION)
+    assert goal16 is not None
+    assert goal16.down_revision == GOAL12_REVISION
+    assert goal16.is_head is True
 
     assert [r.revision for r in script.walk_revisions()] == [
-        GOAL12_REVISION, GOAL09_CORRECTIVE_REVISION,
+        GOAL16_REVISION, GOAL12_REVISION, GOAL09_CORRECTIVE_REVISION,
         GOAL07_REVISION, GOAL06_REVISION,
     ]
 

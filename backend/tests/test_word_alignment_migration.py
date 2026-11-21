@@ -54,6 +54,7 @@ GOAL06_REVISION = "b3727ed7438a"
 GOAL07_REVISION = "fe7b2b8e5323"
 GOAL09_CORRECTIVE_REVISION = "b5d2e8a14c7f"
 GOAL12_REVISION = "a7c2e9f4b1d8"
+GOAL16_REVISION = "c9d4f1a6b2e3"
 GOAL12_FILENAME = f"{GOAL12_REVISION}_add_word_alignment_tables.py"
 
 # Constant names that MUST be byte-for-byte identical between app.db.models and
@@ -158,12 +159,14 @@ def test_single_head_and_linear_history() -> None:
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
     script = ScriptDirectory.from_config(cfg)
 
-    assert script.get_heads() == [GOAL12_REVISION]
+    assert script.get_heads() == [GOAL16_REVISION]
     assert script.get_revision(GOAL12_REVISION).down_revision == GOAL09_CORRECTIVE_REVISION
-    assert script.get_revision(GOAL12_REVISION).is_head is True
+    assert script.get_revision(GOAL12_REVISION).is_head is False
     assert script.get_revision(GOAL09_CORRECTIVE_REVISION).is_head is False
+    assert script.get_revision(GOAL16_REVISION).down_revision == GOAL12_REVISION
+    assert script.get_revision(GOAL16_REVISION).is_head is True
     assert [r.revision for r in script.walk_revisions()] == [
-        GOAL12_REVISION, GOAL09_CORRECTIVE_REVISION,
+        GOAL16_REVISION, GOAL12_REVISION, GOAL09_CORRECTIVE_REVISION,
         GOAL07_REVISION, GOAL06_REVISION,
     ]
 

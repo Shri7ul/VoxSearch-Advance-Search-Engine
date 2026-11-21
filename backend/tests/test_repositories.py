@@ -690,10 +690,11 @@ def test_all_list_methods_have_id_tiebreaker(session: MagicMock) -> None:
 
 
 def test_importing_repository_layer_does_not_change_schema() -> None:
-    """Repositories add no schema: metadata matches the declared eight tables.
+    """Repositories add no schema: metadata matches the declared nine tables.
 
     Goal 08 added none; Goal 12 added exactly three additive word-alignment
-    tables via the migration/models, not via the repository layer.
+    tables and Goal 16 added one (video_chunks) via the migration/models, not
+    via the repository layer.
     """
     assert set(Base.metadata.tables) == {
         f"{SCHEMA}.{n}"
@@ -701,6 +702,6 @@ def test_importing_repository_layer_does_not_change_schema() -> None:
             "channels", "videos", "content_rights",
             "transcript_assets", "transcript_segments",
             "source_audio_assets", "transcript_alignment_runs",
-            "transcript_words",
+            "transcript_words", "video_chunks",
         )
     }

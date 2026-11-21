@@ -5,11 +5,15 @@ Goal 07 added composite foreign keys that enforce cross-table video ownership
 consistency. This module defines the relational metadata; it intentionally
 contains:
 
-* NO vector / embedding columns or indexes (planned for a later goal),
 * NO ORM relationships (the tables stand alone; ``get_db`` sessions are used
-  only for explicit queries in future goals),
+  only for explicit queries),
 * NO sample / production data,
 * NO application CRUD or ingestion logic.
+
+Goal 16 adds the ``video_chunks`` table: one 1:1 chunk↔embedding row with a
+``vector(1024)`` column. It intentionally has NO ANN/HNSW/IVFFlat index
+(cosine similarity search is Goal 17) and NO pgvector extension creation
+(the extension is assumed pre-installed from Goal 06).
 
 All objects live in the dedicated ``voxsearch`` schema so they are isolated
 from Supabase-managed objects in ``public`` and the system schemas.
@@ -26,6 +30,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    JSON,
     MetaData,
     String,
     Text,
@@ -35,6 +40,8 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from app.db.types import VectorType
 
 SCHEMA = "voxsearch"
 
@@ -111,6 +118,18 @@ _ALIGNMENT_STATUS_CHECK_SQL = (
     + ", ".join(f"'{s}'" for s in ALIGNMENT_RUN_STATUS_VALUES)
     + ")"
 )
+
+# --- Goal 16: vector persistence (video_chunks) ---------------------------
+# Constraint names kept byte-for-byte in sync with the Goal 16 Alembic
+# migration (migrations/versions/c9d4f1a6b2e3_goal16_video_chunks.py); the
+# tests assert equality. The UNIQUE constraint is the idempotent-upsert key:
+# a re-insertion of the same (asset, chunk index, model) refreshes the row
+# instead of creating a duplicate. The composite FKs target existing declared
+# UNIQUE tuples (Goal 07), so no new backing unique is needed on old tables.
+UQ_VIDEO_CHUNKS_ASSET_CHUNK_MODEL = "uq_video_chunks_asset_chunk_model"
+FK_VIDEO_CHUNKS_VIDEO = "fk_video_chunks_video"
+FK_VIDEO_CHUNKS_ASSET_VIDEO = "fk_video_chunks_asset_video"
+FK_VIDEO_CHUNKS_RIGHT_VIDEO = "fk_video_chunks_right_video"
 
 
 # Explicit schema-qualified metadata: every Table created from this Base is
@@ -786,5 +805,118 @@ class TranscriptWord(Base):
         ),
         CheckConstraint(
             "length(btrim(word)) > 0", name="ck_transcript_words_word_nonempty"
+        ),
+    )
+
+
+class VideoChunk(Base):
+    """One Goal 13 chunk together with its 1024-dim dense embedding (Goal 16).
+
+    This is the persistence shape for a production chunk: the chunk metadata is
+    a faithful, reconstructible SUBSET of :class:`app.transcripts.chunking.Chunk`
+    (the ``sentences`` detail and ``evidence_start`` are omitted — the verbatim
+    ``text`` and the ordered provenance are enough to reconstruct retrieval
+    evidence). ``embedding`` is a NOT NULL ``vector(1024)`` column holding the
+    Goal 15 L2-normalized dense vector, 1:1 with the chunk.
+
+    Identity & upsert
+    -----------------
+    Goal 13 chunks have no stable id, only a 0-based ``index``. Persistence
+    identity is therefore COMPOSED from the real parent provenance plus that
+    index and the embedding model:
+    ``(transcript_asset_id, chunk_index, model_id)`` is UNIQUE and is the
+    idempotent-upsert key. Re-persisting the same chunk/model REFRESHES the
+    embedding instead of creating a duplicate (see
+    :class:`app.repositories.video_chunks.VideoChunkRepository`).
+
+    Ownership integrity
+    -------------------
+    A chunk can only reference an asset / right belonging to the SAME video:
+    ``(transcript_asset_id, video_id)`` -> transcript_assets and
+    ``(content_right_id, video_id)`` -> content_rights (composite FKs backed by
+    the Goal 07 declared UNIQUE tuples), plus ``video_id`` -> videos (cascade).
+
+    All three parent UUIDs are REQUIRED and NOT NULL here; the service layer
+    fail-closes any chunk that lacks strict ``uuid.UUID`` provenance. ``model_id``
+    is supplied by the service (the DB layer does not import the embedding
+    library). Timestamps, text and the model id are guarded by CHECKs. No ANN
+    index / no cosine search — those belong to Goal 17.
+    """
+
+    __tablename__ = "video_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, primary_key=True, default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    video_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            f"{SCHEMA}.videos.id", name=FK_VIDEO_CHUNKS_VIDEO,
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    transcript_asset_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    content_right_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    start_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    end_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    timestamp_precision: Mapped[str] = mapped_column(String(32), nullable=False)
+    word_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    boundary_reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_segment_refs: Mapped[list] = mapped_column(JSON, nullable=False)
+    overlap_sentence_indices: Mapped[list] = mapped_column(JSON, nullable=False)
+    diagnostics: Mapped[list] = mapped_column(JSON, nullable=False)
+    model_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    embedding: Mapped[tuple[float, ...]] = mapped_column(
+        VectorType(1024), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        # Idempotent-upsert key (one row per chunk per model per asset).
+        UniqueConstraint(
+            "transcript_asset_id", "chunk_index", "model_id",
+            name=UQ_VIDEO_CHUNKS_ASSET_CHUNK_MODEL,
+        ),
+        # Ownership: asset and right must belong to this chunk's video.
+        ForeignKeyConstraint(
+            ["transcript_asset_id", "video_id"],
+            [
+                f"{SCHEMA}.transcript_assets.id",
+                f"{SCHEMA}.transcript_assets.video_id",
+            ],
+            name=FK_VIDEO_CHUNKS_ASSET_VIDEO,
+        ),
+        ForeignKeyConstraint(
+            ["content_right_id", "video_id"],
+            [
+                f"{SCHEMA}.content_rights.id",
+                f"{SCHEMA}.content_rights.video_id",
+            ],
+            name=FK_VIDEO_CHUNKS_RIGHT_VIDEO,
+        ),
+        CheckConstraint(
+            "chunk_index >= 0", name="ck_video_chunks_chunk_index_nonnegative"
+        ),
+        CheckConstraint(
+            "start_ms >= 0 AND end_ms > start_ms AND duration_ms >= 0",
+            name="ck_video_chunks_time_window",
+        ),
+        CheckConstraint(
+            "length(btrim(model_id)) > 0",
+            name="ck_video_chunks_model_id_nonblank",
+        ),
+        CheckConstraint(
+            'length(btrim("text")) > 0', name="ck_video_chunks_text_nonblank"
         ),
     )

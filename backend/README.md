@@ -10,16 +10,20 @@ FastAPI backend for VoxSearch.
 > ingestion foundation** and its original-text persistence correction
 > (Goal 09), **deterministic multilingual sentence segmentation** (Goal 10),
 > and **timestamp preservation through word-level forced alignment**
-> (Goal 12), and **deterministic, sentence-aware chunking** (Goal 13).
-> ASR, embeddings, reranking, and semantic search are **not** implemented.
-> Goal 14 (**ACCEPTED**) has prepared and validated an **isolated, CPU-only
+> (Goal 12), and **deterministic, sentence-aware chunking** (Goal 13),
+> **dense BGE-M3 embedding generation** (Goal 15, ACCEPTED), and
+> **PostgreSQL + pgvector vector persistence** (Goal 16, ACCEPTED; live PostgreSQL verification pending).
+> ASR, reranking, and semantic search are **not** implemented; cosine
+> similarity search and retrieval are **not** implemented (Goal 17 remains NOT STARTED).
+> Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
-> `backend/.venv-embedding`; it adds no application code, no database objects,
-> and no embeddings (see §11).
+> `backend/.venv-embedding` (see §11); Goal 15 builds a torch-free contract
+> layer + isolated worker ON TOP of that environment (see §12); Goal 16 builds
+> the database persistence layer with a custom SQLAlchemy `VectorType` UDT and
+> atomic repository/service (see §13).
 > Goals 09–13 stay limited to transcript processing foundations (no search,
-> no embeddings). Goal 12 is library-level: it adds no HTTP routes,
-> downloads no audio, installs no heavy dependency into the core venv, and
-> has been accepted but NOT applied to production (see §9 "Status").
+> no embeddings). Goal 12 and Goal 16 migrations are accepted but NOT applied
+> to production Supabase (see §9 and §13 "Status").
 
 ## Structure
 
@@ -983,11 +987,12 @@ above.
 > recorded in `progress.md`).
 > This goal is **installation and environment validation ONLY**. It adds no
 > application code, no HTTP routes, no database objects, and no embeddings.
-> Embedding generation (Goal 15), vector persistence (Goal 16), similarity
-> search (Goal 17), hybrid retrieval / RRF / reranking / search API / frontend,
-> and any pgvector schema or migration are explicitly **out of scope** and
-> remain unimplemented. The heavy ML stack lives in a **separate, isolated
-> interpreter**; the core `backend/.venv` is untouched.
+> Vector persistence (Goal 16), similarity search (Goal 17), hybrid retrieval /
+> RRF / reranking / search API / frontend, and any pgvector schema or migration
+> are explicitly **out of scope** and remain unimplemented. (Goal 15's dense
+> embedding generation is now ACCEPTED — see §12.) The heavy
+> ML stack lives in a **separate, isolated interpreter**; the core
+> `backend/.venv` is untouched.
 
 ### Hardware / environment assessment (measured, not assumed)
 
@@ -1144,24 +1149,228 @@ python -m venv .venv-embedding
 
 ### Known limitations / not verified / explicitly not done
 
-- **No** production embedding generation, batch embedding pipeline, or
-  persistence.
+- **Goal 14 added no** production embedding generation, batch embedding
+  pipeline, or persistence (library-level generation is Goal 15, §12).
 - **No** DB embedding columns, **no** `video_chunks` table, **no** pgvector /
   HNSW / GIN / FTS objects, **no** Alembic migration, and **no** production
   migration applied.
 - **No** cosine similarity search, hybrid retrieval, RRF, reranker, search
   API, or frontend integration.
-- Goal 15 is **not started**.
+- Goal 15 is now **ACCEPTED** (library-level dense
+  generation only — NOT a production embedding pipeline or persistence layer;
+  see §12).
 - `.env` was never read or exposed; no credentials or connection URLs are in
-  the change set; the Git remote was not modified; nothing is committed or
-  pushed for Goal 14 (all changes remain in the working tree for review).
+  the change set; the Git remote was not modified. Goal 14 has been
+  **committed on `main` and pushed to `origin/main` at `969c5b5`** (it is no
+  longer an uncommitted working-tree change set).
 - Live long-sequence / 8192-token inference, GPU inference, and CPU throughput
   benchmarking are not performed. Only the minimal dense-only CPU smoke test
   above is claimed.
 
 ---
 
+## 12. Goal 15 — Embedding generation (1024-dimensional BGE-M3 dense embeddings)
+
+> **Status: ACCEPTED** (implementation and validation reviewed and accepted;
+> recorded in `progress.md`). Verified validation (§15): core **53 passed**;
+> worker **38 passed, 1 skipped**; full backend suite **845 passed, 2 skipped,
+> 1 warning**; real BGE-M3 CPU smoke test **PASS**.
+> Goal 15 is **dense embedding generation ONLY**. The canonical tracker
+> (`progress.md`) requires a single achievement: a `1024-dimensional vector`.
+> No vector persistence (Goal 16), cosine similarity search (Goal 17), search
+> API (Goal 18), sparse / ColBERT retrieval, reranking, frontend, YouTube
+> ingestion, Redis/Celery, DB migration, or production deployment is added.
+
+### Architecture (mirrors Goal 12's isolation boundary)
+
+The heavy BGE-M3 model is loaded ONCE in a separate process; importing
+`app` / `app.transcripts` / `app.embeddings` NEVER loads torch / transformers /
+FlagEmbedding / numpy.
+
+| Layer | Files | Role |
+| --- | --- | --- |
+| Pure contracts | `backend/app/embeddings/contracts.py`, `__init__.py` | torch-free validated config (pydantic), strict input/output validation (exactly 1024 dims, no NaN/Inf, **L2-normalized within a documented tolerance — non-normalized output is REJECTED, never silently rescaled**), bounded batching, ordered `EmbeddingBatch`, typed error taxonomy, `generate_embeddings()`, read-only `texts_from_chunks()` bridge to Goal 13 `Chunk.text` |
+| Torch-free client | `backend/embedding_worker/client.py` | `SubprocessEmbeddingProvider` (satisfies the `EmbeddingProvider` protocol): explicit argv, `shell=False`, bounded stdin/stdout, timeout, minimal credential-free env (HF offline + CPU thread caps); maps closed worker errors to typed exceptions |
+| Isolated worker | `backend/embedding_worker/worker.py`, `__init__.py` | stdlib + LAZY `FlagEmbedding` import; loads `BGEM3FlagModel` ONCE (`use_fp16=False`, `devices=["cpu"]`, dense-only), bounded ordered batches, token-length guard against silent truncation, fail-closed JSON protocol |
+
+Embeddings are returned as a **separate, strictly ordered** `EmbeddingBatch`
+1:1 with the validated input; Goal 13's `Chunk` is NEVER given an embedding
+field, so Goal 16 is free to choose the storage shape with no Goal 12/13
+regression.
+
+### Deliberate duplication: two bounded-batching paths
+
+Two small batching implementations exist and are intentionally kept (documented
+rather than removed):
+
+* `app/embeddings/contracts.py` exposes `iter_batches` +
+  `InProcessEmbeddingProvider` (with the `DenseEncoder` / `EmbeddingProvider`
+  protocols). This is the **public, torch-free contract layer**: it is in
+  `app.embeddings.__all__`, is exercised directly by `tests/test_embeddings.py`,
+  and provides a supported in-process provider path for callers that already
+  hold a loaded encoder.
+* `embedding_worker/worker.py::_encode_batches` re-implements the same bounded,
+  ordered loop **inside the isolated process**. The worker deliberately MUST NOT
+  import `app` (it runs in the optional `.venv-embedding` interpreter without
+  pydantic / fastapi / sqlalchemy), so it cannot reuse the contract helpers.
+
+Removing either would break a public contract or force the isolated worker to
+import the core application — architectural churn with a public-API effect.
+Both are therefore kept, and `TestLimitConsistency` asserts that the worker's
+LOCAL copies of every shared bound stay equal to the authoritative constants in
+`contracts.py`, so the duplication cannot silently drift.
+
+### Conservative CPU / memory policy (NOT benchmarks)
+
+CPU-only hardware with limited free RAM. Defaults: `batch_size=4`,
+`max_length=256`, ≤64 texts/call, ≤8192 characters/text, float32 CPU, fp16 OFF,
+`OMP/MKL/NUMEXPR_NUM_THREADS=4`. Sparse / multi-vector heads are disabled.
+Exact subword-token length is checked BEFORE `encode`, so an over-length text
+is REJECTED (closed `text_too_long`), never silently truncated. No throughput /
+latency claim is made.
+
+**Explicit, consistent limits (single source of truth).**
+`app/embeddings/contracts.py` defines the authoritative bounds:
+`MAX_TEXT_CHARACTERS = 8192` (BOTH the `EmbeddingConfig` upper bound AND the
+worker hard cap), `MAX_TEXTS_PER_CALL = 64`, `MAX_BATCH_SIZE = 8`,
+`MAX_MAX_LENGTH = 512`, `MAX_MODEL_ID_CHARACTERS = 256`,
+`MAX_MODEL_PATH_CHARACTERS = 4096`. The worst-case core-valid JSON request was
+measured at 3,172,177 bytes, so `MAX_REQUEST_BYTES = 4_000_000` (~26% headroom)
+and `MAX_RESPONSE_BYTES = 16_000_000` (measured worst-case response 1,310,883
+bytes). `client.py` imports these constants directly; `worker.py` keeps LOCAL
+copies (it cannot import `app`), and `TestLimitConsistency` asserts the copies
+equal the authoritative values, so NO core-accepted configuration can be
+dropped by a hidden client/worker mismatch. Dense vectors must be L2-normalized
+within `NORMALIZATION_TOLERANCE = 1e-3`; non-normalized model output is
+rejected, never silently rescaled. These are correctness/safety bounds, NOT
+performance benchmarks.
+
+### Usage (operator-supplied isolated interpreter + cached weights)
+
+```python
+from app.embeddings import generate_embeddings, EmbeddingConfig
+from embedding_worker.client import SubprocessEmbeddingProvider
+
+provider = SubprocessEmbeddingProvider(
+    worker_python=r"<abs>\backend\.venv-embedding\Scripts\python.exe",
+)
+cfg = EmbeddingConfig(
+    # Optional: a LOCAL cached snapshot dir. If None, "BAAI/bge-m3" resolves
+    # from the Hugging Face cache with HF_HUB_OFFLINE=1 (no download).
+    model_path=None,
+    max_length=32,
+    batch_size=2,
+)
+batch = generate_embeddings(["a short sentence", "another sentence"],
+                           provider, config=cfg)
+# batch.count == 2; each batch.vectors[i].values is a tuple of 1024 finite floats
+```
+
+### Known limitations / not verified / explicitly not done
+
+- **Library-level generation only** — NOT a production embedding pipeline,
+  batch job, queue/worker scheduler, or persistence layer. No vectors are
+  stored; no DB embedding columns, `video_chunks` table, pgvector / HNSW /
+  GIN / FTS objects, Alembic migration, or production migration.
+- **No** cosine similarity search, hybrid retrieval, RRF, reranker, search API,
+  frontend, YouTube ingestion, Redis/Celery, or deployment.
+- **Sparse / ColBERT retrieval** is disabled (dense ONLY); the canonical Goal
+  15 criteria require only a 1024-dimensional vector.
+- The default test suite injects a controlled pure-stdlib `FlagEmbedding`
+  double; it does NOT load the multi-GB model. An opt-in
+  `@pytest.mark.live_embedding` test is SKIPPED by default. A small standalone
+  real-weights CPU smoke test WAS run through the full code path (see
+  "Validation performed").
+- Live long-sequence / 8192-token inference, GPU inference, and CPU throughput
+  benchmarking are NOT performed. No performance guarantees are claimed.
+- `.env` is never read; no credentials are forwarded to the worker process.
+
+---
+
+## 13. Goal 16 — Vector persistence (PostgreSQL + pgvector persistence for 1024-dimensional BGE-M3 embeddings)
+
+> **Status: ACCEPTED** (implementation and adversarial audit complete; live PostgreSQL/pgvector
+> runtime verification remains pending because no local PostgreSQL/Docker runtime was available;
+> recorded in `progress.md`).
+> Goal 16 provides the relational + pgvector persistence foundation for Goal 13
+> transcript chunks and Goal 15 dense embeddings (1024-dimensional vectors).
+> Strict scope boundary: cosine similarity search (Goal 17 remains NOT STARTED),
+> search endpoint (Goal 18), vector retrieval indexes (HNSW/IVFFlat), reranking,
+> sparse vectors, ColBERT, and frontend remain **planned** and are explicitly **unimplemented**.
+
+### Table design (`voxsearch.video_chunks`)
+
+- **Single table design**: Goal 13 chunk metadata and Goal 15 embedding vector are persisted together in a single `voxsearch.video_chunks` table (no separate embeddings table).
+- **UUID Primary Key**: `id` with server default `gen_random_uuid()`.
+- **Ownership integrity**: composite foreign keys enforce video ownership consistency:
+  - `(transcript_asset_id, video_id) REFERENCES voxsearch.transcript_assets(id, video_id)`
+  - `(content_right_id, video_id) REFERENCES voxsearch.content_rights(id, video_id)`
+  - `video_id REFERENCES voxsearch.videos(id) ON DELETE CASCADE`
+- **Zero-based chunk index**: `chunk_index` (integer) with `CHECK (chunk_index >= 0)`.
+- **Chunk text**: verbatim `text` with `CHECK (length(btrim("text")) > 0)`.
+- **Temporal bounds**: `start_ms`, `end_ms`, `duration_ms` with `CHECK (start_ms >= 0 AND end_ms > start_ms AND duration_ms >= 0)`.
+- **Chunk metadata**: `timestamp_precision`, `word_count`, `boundary_reason`, `source_segment_refs` (JSON), `overlap_sentence_indices` (JSON), `diagnostics` (JSON).
+- **Model tracking**: `model_id` with `CHECK (length(btrim(model_id)) > 0)`.
+- **Vector embedding**: `embedding vector(1024) NOT NULL` using the custom SQLAlchemy `VectorType`.
+- **Audit timestamps**: `created_at` and `updated_at` (timestamptz with `now()` server default).
+- **Idempotent upsert key**: `UNIQUE (transcript_asset_id, chunk_index, model_id)`. Re-inserting the same chunk and model refreshes the row in place rather than creating duplicate rows.
+
+### Dependency-free SQLAlchemy `VectorType` UDT
+
+- Custom `UserDefinedType` without `pgvector-python` or `numpy` dependencies in `backend/.venv`.
+- DDL compilation: renders `vector(1024)` correctly in PostgreSQL DDL statements (`CreateTable`).
+- Bind processing: validates input sequence type, dimension (1024), finite floats (rejects NaN/Infinity/bool), formats pgvector literal `"[0.1,0.2,...]"`, and optionally validates unit L2 normalization (`validate_norm=True`).
+- Result processing: parses literal strings or native sequences back into `tuple[float, ...]`.
+- Bind expression: wraps binds in `CAST(... AS vector(1024))` to defend against psycopg3 string/text OID inference.
+- Dialect / driver verification: SQLAlchemy 2.0.57, psycopg 3.2.13.
+
+### Atomic persistence service & repository
+
+- `VideoChunkPersistenceService`: owns the transaction via `transaction(self._session)`.
+  - Enforces strict `uuid.UUID` provenance for all parent IDs (`video_id`, `transcript_asset_id`, `content_right_id`).
+  - Verifies 1:1 chunk-to-embedding count, dimension (1024), and model ID matching.
+  - Re-validates each vector via `EmbeddingVector.from_sequence` (dimension, finiteness, L2 normalization).
+  - Rolls back completely upon any validation error or `SQLAlchemyError`.
+- `VideoChunkRepository`: thin data-access layer.
+  - `upsert_batch`: emits a single `INSERT ... ON CONFLICT (transcript_asset_id, chunk_index, model_id) DO UPDATE SET ...` statement for atomic multi-row upsert.
+  - Never calls `commit` or `rollback` directly (preserves service transaction ownership).
+
+### Alembic migration (`c9d4f1a6b2e3_goal16_video_chunks.py`)
+
+- Down revision: `a7c2e9f4b1d8` (5 revisions in single-head linear chain).
+- Schema: isolated `voxsearch` schema.
+- DDL-only and additive: creates `video_chunks` table with all inline constraints.
+- `downgrade()` drops only `video_chunks`.
+- Production Supabase status: **UNAPPLIED** (no migrations applied to production).
+
+### Known limitations / not verified / explicitly not done
+
+- **Real PostgreSQL + pgvector integration is NOT VERIFIED in this environment.** No local PostgreSQL instance with pgvector or Docker is available. Offline DDL rendering, AST checks, and mocked unit tests were executed. An opt-in test (`@pytest.mark.live_pgvector`) in `tests/test_video_chunks_live_pgvector.py` is provided for environments with a test database.
+- **Production Supabase migration remains unapplied.**
+- **No vector index** (no HNSW or IVFFlat retrieval index).
+- **No similarity search** (Goal 17).
+- **No search endpoint** (Goal 18).
+- `.env` was never read or modified.
+
+---
+
 ## Validation performed
+
+### Goal 16 — Vector database persistence (PostgreSQL + pgvector)
+
+Fresh validation in this change set. Core interpreter `backend/.venv/Scripts/python.exe` (Python 3.12.10).
+
+- Focused UDT tests (`tests/test_vector_type.py`): **33 passed** — dimension validation, invalid dimensions rejection, finite float checks, NaN/Inf rejection on bind and result, normalization validation (enabled and default skip), bytes/bytearray parsing, DDL compilation (`vector(1024) NOT NULL`), and `CAST(... AS vector(1024))` bind expression.
+- Schema tests (`tests/test_video_chunks_schema.py`): **14 passed** — 9 declared tables in `voxsearch`, UUID primary key, `vector(1024)` column type, single vector column isolation, composite FKs, UNIQUE upsert key, and CHECK constraints.
+- Repository tests (`tests/test_video_chunks_repository.py`): **8 passed** — single multi-row `INSERT ... ON CONFLICT DO UPDATE` statement, column refresh verification, CAST bind guards, no commit/rollback inside repository, and deterministic `id` tiebreaker in ordering.
+- Service tests (`tests/test_video_chunks_service.py`): **43 passed** — single and batch valid insertion, strict UUID parent validation, within-batch duplicate `chunk_index` rejection, negative/non-integer index rejection, invalid timestamp window rejection, 1:1 chunk/embedding count alignment, dimension checks, NaN/Inf rejection, L2-normalization validation without silent repair, chunk/parent integrity, transaction rollback on DB/validation errors, and idempotent upsert.
+- Migration tests (`tests/test_goal16_migration.py`): **16 passed** — single-head linear history across 5 revisions, offline DDL upgrade/downgrade rendering, schema isolation, constraint names parity.
+- Opt-in live test (`tests/test_video_chunks_live_pgvector.py`): **1 skipped** (marked `@pytest.mark.live_pgvector`; requires live DB).
+- **Total Goal 16 focused suite:** **114 passed, 1 skipped**.
+- **Full backend regression suite:** **965 passed, 3 skipped, 1 warning** (0 regressions across Goals 01–15). The 1 warning is the pre-existing Starlette `httpx`/`testclient` deprecation.
+- `git diff --check` → clean.
+
+**Not claimed:** live PostgreSQL + pgvector server execution in the default test suite (opt-in only; no local instance available); production Supabase migration execution; vector indexes (HNSW/IVFFlat); cosine similarity search (Goal 17); or search API (Goal 18).
 
 ### Goal 14 — BGE-M3 installation & environment validation
 
@@ -1186,12 +1395,56 @@ Fresh validation in this change set. Isolated interpreter
   4.83s` (unchanged from the Goal 12/13 acceptance baseline). Goal 14 adds no
   application code, so no test changes were required.
 - `git diff --check` → clean; `git check-ignore` confirms `.venv-embedding` is
-  ignored; `.env` not in change set; HEAD and `origin/main` unchanged
-  (`33f2126…`), nothing staged, nothing committed or pushed.
+  ignored; `.env` was never read / is not in the change set. Goal 14 has been
+  **committed on `main` and pushed to `origin/main` at `969c5b5`** (HEAD is now
+  `969c5b5`); Goal 15 is **ACCEPTED** and its change set remains **uncommitted**
+  (not committed or pushed).
 
 **Not claimed:** any embedding generation, vector persistence, retrieval,
 migration, or production deployment; long-sequence / GPU / throughput
 benchmarking; live PostgreSQL runtime verification.
+
+### Goal 15 — Embedding generation
+
+Fresh validation in this change set. Core interpreter
+`backend/.venv/Scripts/python.exe` (Python 3.12.10); the real-weights smoke
+uses the isolated `backend/.venv-embedding/Scripts/python.exe`.
+
+- Focused core contract tests (`tests/test_embeddings.py`): **53 passed** — the
+  9 mandated areas (single text, multi-text ordering, 1024 dims, finite values /
+  NaN-Inf rejection, empty input, invalid input, bounded batching, typed
+  load/inference failures, Goal 13 chunk-bridge regression) plus L2-normalization
+  and aligned-limit regression tests.
+- Worker/client integration (`tests/test_embedding_worker.py`): **38 passed,
+  1 skipped** — real isolated worker subprocess with a controlled pure-stdlib
+  `FlagEmbedding` double (single model load, dense-only / fp16-off / CPU flags,
+  bounded ordered batches, credential non-forwarding + HF-offline, typed error
+  mapping, fail-closed request gating, no silent truncation), mocked client
+  parsing, static isolation / pin guarantees; 1 opt-in
+  `@pytest.mark.live_embedding` test SKIPPED by default.
+- **Full backend suite:** `845 passed, 2 skipped, 1 warning`
+  (baseline `754 passed, 1 skipped` → +91 passed / +1 skipped = the 92 new
+  tests; zero Goal 09–13 regressions). The 1 warning is the pre-existing
+  Starlette `httpx`/`testclient` deprecation.
+- Real-weights CPU smoke test through the **FULL** Goal 15 path (core contracts
+  → client → isolated `.venv-embedding` worker → cached `BAAI/bge-m3`),
+  `max_length=32`, `batch_size=2`, `HF_HUB_OFFLINE=1`, 3 short non-sensitive
+  texts (2 identical): **SMOKE TEST: PASS** — `count=3`, every vector
+  `dim=1024`, all finite, L2 norm `1.000000`, determinism `max|diff| = 0`
+  (identical inputs), distinct inputs `max|diff| = 0.10805`, wall ~10.25 s.
+  Offline cache resolution by `model_id` confirmed: all 8 config / weights /
+  tokenizer files `CACHED`.
+- Embedding env `python -m pip check` → `No broken requirements found.`; core
+  env `python -m pip check` → `No broken requirements found.`
+- `git diff --check` → clean (tracked files); new files checked individually
+  (no whitespace errors); `.env` never read / not in change set;
+  `.venv-embedding` and model weights ignored; no `__pycache__` / `.pyc` in the
+  change set.
+
+**Not claimed:** real-weights inference in the DEFAULT test suite (opt-in
+only); long-sequence / 8192-token inference; GPU inference; CPU throughput /
+latency benchmarks or performance guarantees; any vector persistence,
+retrieval, migration, or production deployment.
 
 ### Goal 12 + Goal 13 — finalization validation
 
