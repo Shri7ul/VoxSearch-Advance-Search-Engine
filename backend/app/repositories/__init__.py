@@ -46,7 +46,7 @@ from app.repositories.transcript_alignment_run_repository import (
 from app.repositories.transcript_asset_repository import TranscriptAssetRepository
 from app.repositories.transcript_segment_repository import TranscriptSegmentRepository
 from app.repositories.transcript_word_repository import TranscriptWordRepository
-from app.repositories.video_chunks import VideoChunkRepository
+from app.repositories.video_chunks import ChunkSearchResult, VideoChunkRepository
 from app.repositories.video_repository import VideoRepository
 
 __all__ = [
@@ -57,6 +57,7 @@ __all__ = [
     "UNSET",
     "BaseRepository",
     "ChannelRepository",
+    "ChunkSearchResult",
     "ContentRightsRepository",
     "SourceAudioAssetRepository",
     "TranscriptAlignmentRunRepository",

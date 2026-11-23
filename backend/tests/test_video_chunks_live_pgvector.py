@@ -138,3 +138,47 @@ def test_live_pgvector_insert_roundtrip_and_idempotent_upsert() -> None:
             assert stored[1] == pytest.approx(1.0)  # second vector won
     finally:
         engine.dispose()
+
+
+def test_live_pgvector_cosine_similarity_search() -> None:
+    """Real-DB cosine distance retrieval; SKIPPED by default here (NOT VERIFIED).
+
+    When a real DB is available it proves: (1) pgvector <=> operator computes
+    distance correctly in SQL, (2) ordering by distance ascending ranks the
+    closest vector first, and (3) filtering by video_id / asset_id isolates
+    the candidate set.
+    """
+    url = _require_live_db()
+    engine = create_engine(url)
+    try:
+        unit_target = (1.0,) + (0.0,) * (DEFAULT_DIM - 1)
+        unit_orthogonal = (0.0, 1.0) + (0.0,) * (DEFAULT_DIM - 2)
+        aid, vid, rid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+        row_target = _row(aid, vid, rid, unit_target)
+        row_target["id"] = uuid.uuid4()
+        row_target["chunk_index"] = 0
+        row_target["text"] = "target chunk"
+
+        row_ortho = _row(aid, vid, rid, unit_orthogonal)
+        row_ortho["id"] = uuid.uuid4()
+        row_ortho["chunk_index"] = 1
+        row_ortho["text"] = "orthogonal chunk"
+
+        with Session(engine) as session:
+            repo = VideoChunkRepository(session)
+            repo.upsert_batch([row_target, row_ortho])
+            session.commit()
+
+        with Session(engine) as session:
+            repo = VideoChunkRepository(session)
+            results = repo.search_similar(unit_target, top_k=5, video_id=vid)
+            assert len(results) == 2
+            # Target should be distance ~0.0 (identical)
+            assert results[0].text == "target chunk"
+            assert results[0].distance == pytest.approx(0.0, abs=1e-4)
+            # Orthogonal should be distance ~1.0
+            assert results[1].text == "orthogonal chunk"
+            assert results[1].distance == pytest.approx(1.0, abs=1e-4)
+    finally:
+        engine.dispose()

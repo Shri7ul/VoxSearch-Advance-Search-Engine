@@ -11,10 +11,10 @@ FastAPI backend for VoxSearch.
 > (Goal 09), **deterministic multilingual sentence segmentation** (Goal 10),
 > and **timestamp preservation through word-level forced alignment**
 > (Goal 12), and **deterministic, sentence-aware chunking** (Goal 13),
-> **dense BGE-M3 embedding generation** (Goal 15, ACCEPTED), and
-> **PostgreSQL + pgvector vector persistence** (Goal 16, ACCEPTED; live PostgreSQL verification pending).
-> ASR, reranking, and semantic search are **not** implemented; cosine
-> similarity search and retrieval are **not** implemented (Goal 17 remains NOT STARTED).
+> **dense BGE-M3 embedding generation** (Goal 15, ACCEPTED),
+> **PostgreSQL + pgvector vector persistence** (Goal 16, ACCEPTED; live PostgreSQL verification pending), and
+> **cosine similarity retrieval** (Goal 17, ACCEPTED; live PostgreSQL verification pending).
+> ASR, reranking, and the search API are **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
 > `backend/.venv-embedding` (see §11); Goal 15 builds a torch-free contract
@@ -1294,7 +1294,7 @@ batch = generate_embeddings(["a short sentence", "another sentence"],
 > recorded in `progress.md`).
 > Goal 16 provides the relational + pgvector persistence foundation for Goal 13
 > transcript chunks and Goal 15 dense embeddings (1024-dimensional vectors).
-> Strict scope boundary: cosine similarity search (Goal 17 remains NOT STARTED),
+> Strict scope boundary: cosine similarity search (Goal 17 — now ACCEPTED, see §14),
 > search endpoint (Goal 18), vector retrieval indexes (HNSW/IVFFlat), reranking,
 > sparse vectors, ColBERT, and frontend remain **planned** and are explicitly **unimplemented**.
 
@@ -1354,7 +1354,83 @@ batch = generate_embeddings(["a short sentence", "another sentence"],
 
 ---
 
+## 14. Goal 17 — Cosine similarity search (pgvector `<=>` retrieval)
+
+> **Status: ACCEPTED** (implementation and offline validation complete; owner
+> review completed). Live PostgreSQL/pgvector execution is NOT VERIFIED here (no
+> local instance available); recorded in `progress.md`.
+> Goal 17 adds read-only cosine-distance retrieval over persisted
+> `voxsearch.video_chunks` rows. It adds **no** search HTTP endpoint (Goal 18),
+> **no** vector index (HNSW/IVFFlat), **no** reranker, and **no** migration.
+
+### Retrieval contract
+
+- **Operator**: PostgreSQL pgvector cosine distance `<=>` —
+  `embedding <=> CAST(:query AS vector(1024))`.
+- **Validation boundary**: `VideoChunkSearchService.search()` validates the query
+  vector through Goal 15's `EmbeddingVector.from_sequence` (exactly 1024 finite
+  floats, unit L2 norm within tolerance). Invalid vectors raise
+  `InvalidQueryVectorError` and are **never** silently rescaled.
+- **Top-k**: integer `1 <= top_k <= 100` (`DEFAULT_TOP_K = 10`,
+  `MAX_TOP_K = 100`), enforced at **both** boundaries — the repository raises
+  `ValueError` for direct callers, and the service maps the same failure to
+  `InvalidTopKError`.
+- **Filters**: optional `video_id`, `transcript_asset_id`, and `model_id`,
+  applied in `WHERE` **before** ordering and `LIMIT`.
+- **Ranking**: `ORDER BY distance ASC, chunk_index ASC, id ASC` — a deterministic
+  total order.
+- **Result shape**: `ChunkSearchResult` carries chunk metadata, verbatim text,
+  provenance ids and `distance` (`score = 1 - distance`); the 1024-dim
+  `embedding` column is **not** selected.
+- **Read-only**: no `commit` / `rollback` / `flush`; the repository never opens a
+  transaction.
+
+### Layering
+
+- `VideoChunkRepository.search_similar(...)` — thin, parameterized SQLAlchemy
+  `Select` (no string SQL); enforces the `top_k` bound and relies on
+  `VectorType` for dimension/finiteness at the DB bind boundary.
+- `VideoChunkSearchService.search(...)` — full query-vector / filter / top-k
+  validation, then delegation.
+- Error taxonomy (`SearchError`, `InvalidQueryVectorError`, `InvalidTopKError`,
+  `InvalidSearchFilterError`) subclasses `VoxSearchServiceError`.
+
+### Known limitations / not verified / explicitly not done
+
+- **Live PostgreSQL/pgvector execution is NOT VERIFIED** in this environment.
+  The real-DB test
+  (`tests/test_video_chunks_live_pgvector.py::test_live_pgvector_cosine_similarity_search`)
+  is opt-in (`-m live_pgvector` + `VOXSEARCH_LIVE_PGVECTOR=1` +
+  `VOXSEARCH_TEST_DATABASE_URL`) and skipped by default.
+- **No vector index** (HNSW/IVFFlat) — sequential scan only, as Goal 17 does not
+  require an index.
+- **No search API endpoint** (Goal 18) and **no** reranking / hybrid retrieval.
+- `.env` was never read; no credentials are involved.
+
+---
+
 ## Validation performed
+
+### Goal 17 — Cosine similarity search
+
+- Focused Goal 17 tests
+  (`tests/test_video_chunks_search_repository.py` — **35**,
+  `tests/test_video_chunks_search_service.py` — **61**): **96 passed** — SQL
+  compilation and `<=>` operator, `CAST(... AS vector(1024))` parameterization,
+  deterministic `ORDER BY distance, chunk_index, id`, filter-before-order/limit
+  ordering, omitted embedding column and dataclass field, repository- and
+  service-level top-k bounds, DB-bind rejection of wrong-dimension / NaN / Inf
+  vectors, query-vector normalization rejection without rescaling, filter
+  forwarding and validation, empty results, result mapping, repository-failure
+  propagation, and the read-only contract.
+- Opt-in live test: **1 skipped** (live pgvector not available).
+- **Full backend regression suite:** **1061 passed, 4 skipped, 1 warning** (the 4
+  skips are the pre-existing opt-in live WhisperX, BGE-M3 and pgvector tests; the
+  warning is the pre-existing Starlette `httpx`/`testclient` deprecation).
+- `git diff --check` → clean.
+
+**Not claimed:** live PostgreSQL + pgvector execution; vector index; search API
+endpoint; reranking.
 
 ### Goal 16 — Vector database persistence (PostgreSQL + pgvector)
 

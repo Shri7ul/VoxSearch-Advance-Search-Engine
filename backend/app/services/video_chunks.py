@@ -1,6 +1,7 @@
 """Goal 16 — persistence of Goal 13 chunks + Goal 15 dense embeddings.
+Goal 17 — read-only cosine similarity retrieval over persisted chunks.
 
-This is the application/business boundary for vector persistence. It
+This is the application/business boundary for vector persistence and search. It
 orchestrates :class:`~app.repositories.video_chunks.VideoChunkRepository` and
 owns the transaction through :func:`app.services.transaction`. It enforces the
 fail-closed rules a DB constraint alone cannot express:
@@ -23,12 +24,12 @@ ALL validation AND the single multi-row repository call happen INSIDE one
 unchanged; ``session.commit()`` runs only on full success. The repository emits
 ONE statement, so a batch is atomic — no partial persistence.
 
-Boundaries (Goal 16)
---------------------
-Insert/upsert only. NO cosine similarity / ANN search (Goal 17), NO search
-endpoint (Goal 18), NO reranking / sparse / ColBERT, NO embedding generation
-(Goal 15), NO ORM relationship objects. The pgvector extension is assumed
-pre-installed; no migration is applied here.
+Boundaries (Goals 16–17)
+------------------------
+Goal 16 is insert/upsert only; Goal 17 adds read-only cosine-distance retrieval
+(NO ANN index). NO search endpoint (Goal 18), NO reranking / sparse / ColBERT,
+NO embedding generation (Goal 15), NO ORM relationship objects. The pgvector
+extension is assumed pre-installed; no migration is applied here.
 """
 from __future__ import annotations
 
@@ -47,7 +48,13 @@ from app.embeddings.contracts import (
     InvalidEmbeddingOutputError,
     texts_from_chunks,
 )
-from app.repositories.video_chunks import VideoChunkRepository
+from app.repositories.video_chunks import (
+    DEFAULT_TOP_K,
+    MAX_TOP_K,
+    ChunkSearchResult,
+    VideoChunkRepository,
+    validate_top_k,
+)
 from app.services import VoxSearchServiceError, transaction
 from app.transcripts.chunking import Chunk
 
@@ -68,6 +75,24 @@ class EmbeddingChunkAlignmentError(VectorPersistenceError):
 
 class EmbeddingPersistenceValidationError(VectorPersistenceError):
     """A vector / model id failed the Goal 15 invariants on the way to the DB."""
+
+
+# --- Search error taxonomy (Goal 17) ---------------------------------------
+
+class SearchError(VoxSearchServiceError):
+    """Base exception for Goal 17 cosine similarity search failures."""
+
+
+class InvalidQueryVectorError(SearchError):
+    """Query vector failed validation (dimension, finite, or normalization)."""
+
+
+class InvalidSearchFilterError(SearchError):
+    """Search filter parameters failed validation."""
+
+
+class InvalidTopKError(SearchError):
+    """top_k parameter is invalid or outside allowed bounds [1, MAX_TOP_K]."""
 
 
 class VideoChunkPersistenceService:
@@ -286,10 +311,116 @@ class VideoChunkPersistenceService:
         return rows
 
 
+class VideoChunkSearchService:
+    """Read-only cosine similarity retrieval over persisted video chunks (Goal 17)."""
+
+    def __init__(
+        self,
+        session: Session,
+        repo: VideoChunkRepository | None = None,
+    ) -> None:
+        self._session = session
+        self._repo = repo if repo is not None else VideoChunkRepository(session)
+
+    def search(
+        self,
+        query_vector: EmbeddingVector | Sequence[float],
+        *,
+        top_k: int = DEFAULT_TOP_K,
+        video_id: uuid.UUID | None = None,
+        transcript_asset_id: uuid.UUID | None = None,
+        model_id: str | None = None,
+    ) -> list[ChunkSearchResult]:
+        """Validate search inputs and retrieve ranked candidate chunks.
+
+        Validates query vector dimension, finite values, and unit L2-normalization
+        through Goal 15's EmbeddingVector contract without silent repair. Validates
+        top_k bounds (1 <= top_k <= 100) and filter types. Emits a read-only query
+        without opening a transaction.
+        """
+        validated_k = self._validate_top_k(top_k)
+        validated_vector = self._validate_query_vector(query_vector)
+        self._validate_filters(
+            video_id=video_id,
+            transcript_asset_id=transcript_asset_id,
+            model_id=model_id,
+        )
+        return self._repo.search_similar(
+            validated_vector.values,
+            top_k=validated_k,
+            video_id=video_id,
+            transcript_asset_id=transcript_asset_id,
+            model_id=model_id,
+        )
+
+    @staticmethod
+    def _validate_top_k(top_k: Any) -> int:
+        """Map the shared data-access bound onto the service error taxonomy."""
+        try:
+            return validate_top_k(top_k)
+        except ValueError as exc:
+            raise InvalidTopKError(str(exc)) from exc
+
+    @staticmethod
+    def _validate_query_vector(
+        query_vector: Any,
+    ) -> EmbeddingVector:
+        if isinstance(query_vector, (str, bytes)) or not isinstance(
+            query_vector, (EmbeddingVector, Sequence)
+        ):
+            raise InvalidQueryVectorError(
+                "query_vector must be an EmbeddingVector or sequence of floats, "
+                f"got {type(query_vector).__name__}"
+            )
+        raw = (
+            query_vector.values
+            if isinstance(query_vector, EmbeddingVector)
+            else tuple(query_vector)
+        )
+        try:
+            return EmbeddingVector.from_sequence(raw)
+        except InvalidEmbeddingOutputError as exc:
+            raise InvalidQueryVectorError(
+                f"invalid query vector: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _validate_filters(
+        *,
+        video_id: Any,
+        transcript_asset_id: Any,
+        model_id: Any,
+    ) -> None:
+        if video_id is not None and not isinstance(video_id, uuid.UUID):
+            raise InvalidSearchFilterError(
+                f"video_id must be a uuid.UUID, got {type(video_id).__name__}"
+            )
+        if (
+            transcript_asset_id is not None
+            and not isinstance(transcript_asset_id, uuid.UUID)
+        ):
+            raise InvalidSearchFilterError(
+                "transcript_asset_id must be a uuid.UUID, "
+                f"got {type(transcript_asset_id).__name__}"
+            )
+        if model_id is not None:
+            if not isinstance(model_id, str) or not model_id.strip():
+                raise InvalidSearchFilterError(
+                    "model_id must be a non-empty string"
+                )
+
+
 __all__ = [
+    "DEFAULT_TOP_K",
+    "MAX_TOP_K",
     "EmbeddingChunkAlignmentError",
     "EmbeddingPersistenceValidationError",
     "InvalidChunkParentError",
+    "InvalidQueryVectorError",
+    "InvalidSearchFilterError",
+    "InvalidTopKError",
+    "SearchError",
     "VectorPersistenceError",
     "VideoChunkPersistenceService",
+    "VideoChunkSearchService",
 ]
