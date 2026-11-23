@@ -18,8 +18,9 @@ FastAPI backend for VoxSearch.
 > **natural-language query embedding** (Goal 19, ACCEPTED; generated in the
 > isolated worker), and **top-10 vector retrieval** (Goal 20, ACCEPTED; live DB
 > verification pending), and the **structured JSON response schema** (Goal 21,
-> ACCEPTED; live DB verification pending). ASR, reranking, and the search frontend are
-> **not** implemented.
+> ACCEPTED; live DB verification pending), and **PostgreSQL full-text keyword
+> retrieval** (Goal 22, ACCEPTED; offline SQL only). ASR,
+> reranking, and the search frontend are **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
 > `backend/.venv-embedding` (see §11); Goal 15 builds a torch-free contract
@@ -1572,12 +1573,65 @@ regressions) were verified with no defect found.
 
 ### Explicitly out of scope (NOT implemented)
 
-- Goal 22+ (hybrid search / FTS), reranking, frontend, migrations, writes, and
-  any model loading in the API process.
+- Goal 23+ (hybrid combination, RRF, dedup), reranking, frontend, migrations,
+  writes, and any model loading in the API process. PostgreSQL FTS itself is
+  implemented in §19.
+
+---
+
+## 19. Goal 22 — PostgreSQL FTS (exact keyword retrieval)
+
+> **Status: ACCEPTED** (independent adversarial review complete, offline SQL
+> compilation and unit tests pass). Live PostgreSQL execution is NOT VERIFIED.
+
+### Review outcome
+
+The adversarial review found one genuine defect: the fixed `english` regconfig
+was bound as a bare `text` parameter, which would fail function resolution for
+`to_tsvector(regconfig, text)` / `websearch_to_tsquery(regconfig, text)` at
+runtime. The config is now explicitly `CAST(... AS REGCONFIG)` while remaining
+a bind parameter, with a regression assertion on the compiled SQL. All other
+areas (FTS function usage, injection safety, ranking determinism,
+filter-before-limit, `top_k` bounds, validation, read-only behavior, service
+separation) were verified with no defect found.
+
+### Scope and architecture
+
+- `app/repositories/lexical_search.py` — `LexicalSearchRepository.search_keywords`
+  performs read-only full-text search over `voxsearch.video_chunks.text` with
+  PostgreSQL `to_tsvector`, `websearch_to_tsquery`, the `@@` match operator and
+  `ts_rank`. Query text and the fixed `english` regconfig are bind parameters;
+  `websearch_to_tsquery` prevents tsquery operator injection. Filters are
+  applied in `WHERE` before ranking and `LIMIT`; ordering is deterministic
+  (`rank DESC, chunk_index, id`); the embedding column is never selected. The
+  regconfig is bound and explicitly cast to `REGCONFIG` for PostgreSQL function
+  resolution.
+- `app/services/lexical_search.py` — `KeywordSearchService` validates query
+  (type, non-blank, bounded length), `top_k` (shared Goal 17 bound) and filters,
+  with a credential-free error taxonomy. No writes, no transaction, no commit.
+- `top_k` uses the same `[1, 100]` validator and default of 10 as Goal 17.
+- `tests/test_lexical_search_repository.py` (15) and
+  `tests/test_keyword_search_service.py` (18).
+
+### Explicitly out of scope (NOT implemented)
+
+- GIN index / migration, HTTP endpoint, dense+lexical combination (Goal 23),
+  RRF (Goal 24), dedup (Goal 25), reranking, frontend, and any model load.
 
 ---
 
 ## Validation performed
+
+### Goal 22 — PostgreSQL FTS
+
+- Focused tests: **33 passed** (12 repository + 21 service) — FTS function use,
+  parameterized query / regconfig cast, no embedding selection, deterministic rank
+  ordering, filter-before-limit, bounded `top_k`, row mapping, empty results,
+  strict query / filter validation and error propagation.
+- Full backend suite: **1189 passed, 4 skipped, 1 warning**; `py_compile` clean;
+  `git diff --check` clean.
+- Not verified: live PostgreSQL/pgvector execution. The compiled SQL shape was
+  inspected offline only; no database, index or migration was touched.
 
 ### Goal 21 — Search response schema
 
