@@ -14,9 +14,10 @@ FastAPI backend for VoxSearch.
 > **dense BGE-M3 embedding generation** (Goal 15, ACCEPTED),
 > **PostgreSQL + pgvector vector persistence** (Goal 16, ACCEPTED; live PostgreSQL verification pending), and
 > **cosine similarity retrieval** (Goal 17, ACCEPTED; live PostgreSQL verification pending), and
-> the **search HTTP endpoint** (Goal 18, ACCEPTED;
-> `POST /api/v1/search`, precomputed query vector). ASR, query-text embedding
-> (Goal 19), reranking, and the search frontend are **not** implemented.
+> the **search HTTP endpoint** (Goal 18, ACCEPTED; `POST /api/v1/search`) and
+> **natural-language query embedding** (Goal 19, ACCEPTED; generated in the
+> isolated worker). ASR, reranking, and the search frontend
+> are **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
 > `backend/.venv-embedding` (see §11); Goal 15 builds a torch-free contract
@@ -1421,22 +1422,24 @@ batch = generate_embeddings(["a short sentence", "another sentence"],
 
 ### Scope
 
-- `app/api/search.py` — the sole Goal 18 implementation module. It defines the
-  strict JSON request model, the minimal response envelope, the service
-  dependency, the route, and error translation.
+- `app/api/search.py` — the Goal 18 HTTP module. It defines the strict JSON
+  request model, the minimal response envelope, the service dependencies, the
+  route, and error translation. Goal 19's optional `query` field is delegated to
+  `QueryEmbeddingService`.
 - `app/main.py` — mounts the router at `API_PREFIX` (`/api/v1/search`) and as an
   unversioned `/search` alias (hidden from OpenAPI) for the tracker's literal
   route; adds a credential-free HTTP 503 handler for a missing database URL and
   a sanitizing HTTP 422 handler that strips Pydantic's `input` / `ctx` fields so
   a validation failure cannot echo the submitted query vector.
-- `tests/test_search_api.py` — 32 focused endpoint tests.
+- `tests/test_search_api.py` — 40 focused endpoint tests.
 
 ### Contract
 
-- **Request**: `query_vector` (precomputed, length-bounded to 1–1024 strict
-  floats), `top_k` (strict int, default 10), optional `video_id` /
-  `transcript_asset_id` (UUID) and `model_id` (strict string). Unknown fields
-  are rejected; strings/bools are never coerced to numbers.
+- **Request**: exactly one of `query` (Goal 19 natural-language text) or
+  `query_vector` (precomputed, length-bounded to 1024 strict floats); `top_k`
+  (strict int, default 10), optional `video_id` / `transcript_asset_id` (UUID)
+  and `model_id` (strict string). Unknown fields are rejected; strings/bools are
+  never coerced to numbers.
 - **Response**: `{"count": N, "results": [...]}` with ranked chunk metadata,
   verbatim `text`, `distance`, and derived `score`. Raw embeddings are never
   returned.
@@ -1450,31 +1453,82 @@ batch = generate_embeddings(["a short sentence", "another sentence"],
 
 ### Explicitly out of scope (NOT implemented)
 
-- **Goal 19 — query embedding**: no natural-language `query` field, no model
-  load, no embedding generation. Clients must supply a precomputed vector.
 - Goal 20 (additional retrieval policies), Goal 21 (final public response
   schema), Goal 22+ (hybrid search), reranking, and the frontend.
 - No migration, no production database access, no `.env` access.
 
 ---
 
+## 16. Goal 19 — Query embedding (query vector generated)
+
+> **Status: ACCEPTED** (implementation, final review and offline validation
+> complete). Live isolated real-weights embedding and live PostgreSQL/pgvector
+> are NOT VERIFIED.
+
+### Architecture
+
+- `app/embeddings/query.py` — `QueryEmbeddingService` is a thin orchestration
+  layer over Goal 15's `generate_embeddings`. It converts ONE natural-language
+  query into the same validated `EmbeddingVector` (exactly 1024 finite,
+  unit-norm floats) used for indexed chunks. Invalid text, non-finite values,
+  wrong dimensions and bad norms are rejected — never silently rescaled.
+- Inference goes through `embedding_worker.client.SubprocessEmbeddingProvider`
+  in the OPTIONAL isolated interpreter path from `VOXSEARCH_EMBEDDING_PYTHON`.
+  The heavy import and model load happen only in that subprocess; `torch` and
+  BGE-M3 are never imported into the core API process. A missing interpreter
+  fails closed with `QueryEmbeddingUnavailableError` (HTTP 503 via §15).
+- No database access, no writes, no model download, no `.env` file read and no
+  credential forwarding. Environment allowlisting is inherited from Goal 15's
+  worker client.
+- `tests/test_query_embedding.py` — 19 focused tests with a controlled provider
+  and a controlled `subprocess.run` double, including preservation of a falsy
+  injected provider (final-review regression).
+
+### Endpoint integration
+
+The Goal 18 endpoint accepts either `query` (Goal 19) or `query_vector`
+(Goal 18), never both and never neither. Invalid query text maps to HTTP 422;
+worker/model/inference failures map to HTTP 503. The generated vector is passed
+to the unchanged Goal 17 service; response payloads still contain no embedding.
+
+---
+
 ## Validation performed
+
+### Goal 19 — Query embedding
+
+- Focused tests (`tests/test_query_embedding.py`): **19 passed** — validated
+  1024-dim unit output, verbatim query forwarding, Goal 15 config reuse,
+  invalid text/wrong dimension/NaN/Inf/non-unit rejection without rescaling,
+  typed provider-failure wrapping, fail-closed missing interpreter, isolated
+  subprocess argv (`shell=False`, credential-free env), explicit worker
+  override, and no silent replacement of a falsy injected provider.
+- Endpoint tests: `tests/test_search_api.py` has **40 passed**, including
+  query-text embedding, mutual exclusivity, 422/503 mapping and no raw
+  embedding in responses.
+- Search-focused total: **155 passed**; Goal 15/16 regressions: **205 passed,
+  1 skipped**; full backend suite: **1120 passed, 4 skipped, 1 warning**.
+- Not verified: live real-weights BGE-M3 inference in the isolated interpreter
+  (no `VOXSEARCH_EMBEDDING_PYTHON` configured and no local Hugging Face model
+  cache; only controlled subprocess doubles were exercised); live
+  PostgreSQL/pgvector round-trip.
 
 ### Goal 18 — Search endpoint
 
-- Focused endpoint tests (`tests/test_search_api.py`): **32 passed** — route
-  registration (versioned + unversioned alias), strict request validation,
-  NaN/Inf and malformed-JSON rejection, 422 responses that do not echo the
-  query vector, OpenAPI schema accuracy, parameter forwarding, result mapping
-  without embeddings, domain-error to HTTP 422 translation, HTTP 503 for missing
-  DB configuration, no writes, and session cleanup.
+- Focused endpoint tests (`tests/test_search_api.py`): **32 passed at Goal 18
+  acceptance, 40 passed after Goal 19 integration** — route registration
+  (versioned + unversioned alias), strict request validation, NaN/Inf and
+  malformed-JSON rejection, 422 responses that do not echo the query vector,
+  OpenAPI schema accuracy, parameter forwarding, result mapping without
+  embeddings, domain-error to HTTP 422 translation, HTTP 503 for missing DB
+  configuration, no writes, and session cleanup.
 - Goal 17 + Goal 18 focused: **128 passed**; Goal 15/16 regressions:
   **205 passed, 1 skipped**.
 - `python -m py_compile` on all changed modules → clean.
 - Full backend regression suite: **1093 passed, 4 skipped, 1 warning**.
 - `git diff --check` → clean (CRLF advisories only).
-- Not verified: live PostgreSQL/pgvector round-trip; natural-language query
-  embedding (Goal 19, not implemented).
+- Not verified: live PostgreSQL/pgvector round-trip. Query-text embedding was
+  added later by Goal 19 (§16).
 
 ### Goal 17 — Cosine similarity search
 
@@ -1511,7 +1565,7 @@ Fresh validation in this change set. Core interpreter `backend/.venv/Scripts/pyt
 - **Full backend regression suite:** **965 passed, 3 skipped, 1 warning** (0 regressions across Goals 01–15). The 1 warning is the pre-existing Starlette `httpx`/`testclient` deprecation.
 - `git diff --check` → clean.
 
-**Not claimed:** live PostgreSQL + pgvector server execution in the default test suite (opt-in only; no local instance available); production Supabase migration execution; vector indexes (HNSW/IVFFlat); query-text embedding (Goal 19); or the final public response schema (Goal 21). Goal 17 (cosine search) is ACCEPTED and the Goal 18 endpoint is IMPLEMENTED-PENDING-REVIEW.
+**Not claimed:** live PostgreSQL + pgvector server execution in the default test suite (opt-in only; no local instance available); production Supabase migration execution; vector indexes (HNSW/IVFFlat); live real-weights query embedding; or the final public response schema (Goal 21). Goals 17 (cosine search), 18 (search endpoint) and 19 (query embedding) are ACCEPTED.
 
 ### Goal 14 — BGE-M3 installation & environment validation
 

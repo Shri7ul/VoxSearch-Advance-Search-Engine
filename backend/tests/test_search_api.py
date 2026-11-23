@@ -14,8 +14,13 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.search import get_search_service
+from app.api.search import get_query_embedding_service, get_search_service
 from app.db.session import DatabaseNotConfiguredError, get_db
+from app.embeddings.contracts import InvalidEmbeddingInputError
+from app.embeddings.query import (
+    QueryEmbeddingService,
+    QueryEmbeddingUnavailableError,
+)
 from app.main import app
 from app.repositories.video_chunks import MAX_TOP_K
 from app.services.video_chunks import VideoChunkSearchService
@@ -253,10 +258,11 @@ def test_openapi_documents_bounded_request_and_embedding_free_response(
     request_ref = operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
     request_name = request_ref.rsplit("/", 1)[-1]
     request_schema = schema["components"]["schemas"][request_name]
-    vector_schema = request_schema["properties"]["query_vector"]
+    vector_schema = request_schema["properties"]["query_vector"]["anyOf"][0]
     assert vector_schema["maxItems"] == 1024
+    assert request_schema["properties"]["query"]["anyOf"][0]["type"] == "string"
     assert request_schema["properties"]["top_k"]["default"] == 10
-    assert set(request_schema["required"]) == {"query_vector"}
+    assert request_schema["additionalProperties"] is False
     response_ref = operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
     response_name = response_ref.rsplit("/", 1)[-1]
     hit_ref = schema["components"]["schemas"][response_name]["properties"]["results"]["items"]["$ref"]
@@ -308,3 +314,99 @@ def test_database_not_configured_is_http_503() -> None:
         assert response.status_code == 503
     finally:
         app.dependency_overrides.clear()
+
+
+# --- 7. Goal 19: natural-language query embedding ---------------------------
+
+@pytest.fixture
+def embedder() -> Iterator[MagicMock]:
+    mock = MagicMock()
+
+    def override() -> MagicMock:
+        return mock
+
+    app.dependency_overrides[get_query_embedding_service] = override
+    try:
+        yield mock
+    finally:
+        app.dependency_overrides.pop(get_query_embedding_service, None)
+
+
+def test_query_text_is_embedded_and_used_for_retrieval(
+    client: TestClient, session: MagicMock, embedder: MagicMock
+) -> None:
+    from sqlalchemy.dialects import postgresql
+
+    from app.embeddings.contracts import EmbeddingVector
+
+    embedder.embed.return_value = EmbeddingVector(tuple(UNIT_VECTOR))
+    response = client.post(VERSIONED_PATH, json={"query": "what was said about latency?"})
+    assert response.status_code == 200
+    embedder.embed.assert_called_once_with("what was said about latency?")
+
+    statement = session.execute.call_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    embedding_key = next(key for key in compiled.params if "embedding" in key)
+    assert list(compiled.params[embedding_key]) == pytest.approx(UNIT_VECTOR)
+
+
+def test_query_result_never_contains_raw_embedding(
+    client: TestClient, session: MagicMock, embedder: MagicMock
+) -> None:
+    from app.embeddings.contracts import EmbeddingVector
+
+    session.execute.return_value.all.return_value = [_row()]
+    embedder.embed.return_value = EmbeddingVector(tuple(UNIT_VECTOR))
+    payload = client.post(VERSIONED_PATH, json={"query": "latency"}).json()
+    assert payload["count"] == 1
+    assert "embedding" not in payload["results"][0]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"query": "text", "query_vector": UNIT_VECTOR},
+        {},
+    ],
+)
+def test_exactly_one_query_source_is_required(
+    client: TestClient, body: dict[str, Any]
+) -> None:
+    response = client.post(VERSIONED_PATH, json=body)
+    assert response.status_code == 422
+    assert "exactly one of query or query_vector" in str(response.json()["detail"])
+
+
+def test_precomputed_vector_does_not_invoke_embedder(
+    client: TestClient, embedder: MagicMock
+) -> None:
+    assert _post(client).status_code == 200
+    embedder.embed.assert_not_called()
+
+
+def test_invalid_query_text_is_http_422(client: TestClient, embedder: MagicMock) -> None:
+    embedder.embed.side_effect = InvalidEmbeddingInputError("invalid query text")
+    response = client.post(VERSIONED_PATH, json={"query": "bad"})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "invalid query text"
+
+
+def test_unavailable_query_worker_is_http_503(
+    client: TestClient, embedder: MagicMock
+) -> None:
+    embedder.embed.side_effect = QueryEmbeddingUnavailableError("no isolated worker")
+    response = client.post(VERSIONED_PATH, json={"query": "text"})
+    assert response.status_code == 503
+    assert response.json()["detail"] == "no isolated worker"
+
+
+def test_query_path_does_not_write_or_commit(
+    client: TestClient, session: MagicMock, embedder: MagicMock
+) -> None:
+    from app.embeddings.contracts import EmbeddingVector
+
+    embedder.embed.return_value = EmbeddingVector(tuple(UNIT_VECTOR))
+    assert client.post(VERSIONED_PATH, json={"query": "text"}).status_code == 200
+    session.commit.assert_not_called()
+    session.rollback.assert_not_called()
+    session.flush.assert_not_called()

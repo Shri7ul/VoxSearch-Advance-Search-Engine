@@ -22,6 +22,12 @@ cosine similarity search (Goal 17), search API (Goal 18), sparse / ColBERT
 retrieval, reranking, frontend, YouTube ingestion, workers/queues, and any
 database migration. No production embedding job is run by the test suite.
 """
+from app.embeddings.query import (
+    QUERY_EMBEDDING_PYTHON_ENV,
+    QueryEmbeddingError,
+    QueryEmbeddingService,
+    QueryEmbeddingUnavailableError,
+)
 from app.embeddings.contracts import (
     DEFAULT_MODEL_ID,
     DENSE_DIMENSION,
@@ -53,6 +59,10 @@ from app.embeddings.contracts import (
 )
 
 __all__ = [
+    "QUERY_EMBEDDING_PYTHON_ENV",
+    "QueryEmbeddingError",
+    "QueryEmbeddingService",
+    "QueryEmbeddingUnavailableError",
     "DEFAULT_MODEL_ID",
     "DENSE_DIMENSION",
     "MAX_BATCH_SIZE",
