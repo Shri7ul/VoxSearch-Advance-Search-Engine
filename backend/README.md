@@ -13,8 +13,10 @@ FastAPI backend for VoxSearch.
 > (Goal 12), and **deterministic, sentence-aware chunking** (Goal 13),
 > **dense BGE-M3 embedding generation** (Goal 15, ACCEPTED),
 > **PostgreSQL + pgvector vector persistence** (Goal 16, ACCEPTED; live PostgreSQL verification pending), and
-> **cosine similarity retrieval** (Goal 17, ACCEPTED; live PostgreSQL verification pending).
-> ASR, reranking, and the search API are **not** implemented.
+> **cosine similarity retrieval** (Goal 17, ACCEPTED; live PostgreSQL verification pending), and
+> the **search HTTP endpoint** (Goal 18, ACCEPTED;
+> `POST /api/v1/search`, precomputed query vector). ASR, query-text embedding
+> (Goal 19), reranking, and the search frontend are **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
 > `backend/.venv-embedding` (see §11); Goal 15 builds a torch-free contract
@@ -1404,12 +1406,75 @@ batch = generate_embeddings(["a short sentence", "another sentence"],
   `VOXSEARCH_TEST_DATABASE_URL`) and skipped by default.
 - **No vector index** (HNSW/IVFFlat) — sequential scan only, as Goal 17 does not
   require an index.
-- **No search API endpoint** (Goal 18) and **no** reranking / hybrid retrieval.
+- Goal 17 itself adds **no HTTP endpoint**; the Goal 18 endpoint (§15) is tracked
+  separately and does not change the Goal 17 contract.
+- **No** reranking / hybrid retrieval.
 - `.env` was never read; no credentials are involved.
 
 ---
 
+## 15. Goal 18 — Search endpoint (`POST /search`)
+
+> **Status: ACCEPTED** (implementation, final review and offline validation
+> complete). Live PostgreSQL/pgvector execution is NOT VERIFIED here; no local
+> instance was available.
+
+### Scope
+
+- `app/api/search.py` — the sole Goal 18 implementation module. It defines the
+  strict JSON request model, the minimal response envelope, the service
+  dependency, the route, and error translation.
+- `app/main.py` — mounts the router at `API_PREFIX` (`/api/v1/search`) and as an
+  unversioned `/search` alias (hidden from OpenAPI) for the tracker's literal
+  route; adds a credential-free HTTP 503 handler for a missing database URL and
+  a sanitizing HTTP 422 handler that strips Pydantic's `input` / `ctx` fields so
+  a validation failure cannot echo the submitted query vector.
+- `tests/test_search_api.py` — 32 focused endpoint tests.
+
+### Contract
+
+- **Request**: `query_vector` (precomputed, length-bounded to 1–1024 strict
+  floats), `top_k` (strict int, default 10), optional `video_id` /
+  `transcript_asset_id` (UUID) and `model_id` (strict string). Unknown fields
+  are rejected; strings/bools are never coerced to numbers.
+- **Response**: `{"count": N, "results": [...]}` with ranked chunk metadata,
+  verbatim `text`, `distance`, and derived `score`. Raw embeddings are never
+  returned.
+- **Errors**: Goal 17's `SearchError` taxonomy maps to HTTP 422 with a
+  credential-free `detail`; malformed JSON / bad field types also map to 422,
+  with `input` and `ctx` stripped so the submitted vector is never reflected.
+  A missing database URL maps to HTTP 503. Unexpected exceptions propagate (no
+  empty-success fallback).
+- **Read-only**: the request-scoped session is supplied by `get_db` and always
+  closed; the endpoint never commits, flushes, rolls back, or writes.
+
+### Explicitly out of scope (NOT implemented)
+
+- **Goal 19 — query embedding**: no natural-language `query` field, no model
+  load, no embedding generation. Clients must supply a precomputed vector.
+- Goal 20 (additional retrieval policies), Goal 21 (final public response
+  schema), Goal 22+ (hybrid search), reranking, and the frontend.
+- No migration, no production database access, no `.env` access.
+
+---
+
 ## Validation performed
+
+### Goal 18 — Search endpoint
+
+- Focused endpoint tests (`tests/test_search_api.py`): **32 passed** — route
+  registration (versioned + unversioned alias), strict request validation,
+  NaN/Inf and malformed-JSON rejection, 422 responses that do not echo the
+  query vector, OpenAPI schema accuracy, parameter forwarding, result mapping
+  without embeddings, domain-error to HTTP 422 translation, HTTP 503 for missing
+  DB configuration, no writes, and session cleanup.
+- Goal 17 + Goal 18 focused: **128 passed**; Goal 15/16 regressions:
+  **205 passed, 1 skipped**.
+- `python -m py_compile` on all changed modules → clean.
+- Full backend regression suite: **1093 passed, 4 skipped, 1 warning**.
+- `git diff --check` → clean (CRLF advisories only).
+- Not verified: live PostgreSQL/pgvector round-trip; natural-language query
+  embedding (Goal 19, not implemented).
 
 ### Goal 17 — Cosine similarity search
 
@@ -1446,7 +1511,7 @@ Fresh validation in this change set. Core interpreter `backend/.venv/Scripts/pyt
 - **Full backend regression suite:** **965 passed, 3 skipped, 1 warning** (0 regressions across Goals 01–15). The 1 warning is the pre-existing Starlette `httpx`/`testclient` deprecation.
 - `git diff --check` → clean.
 
-**Not claimed:** live PostgreSQL + pgvector server execution in the default test suite (opt-in only; no local instance available); production Supabase migration execution; vector indexes (HNSW/IVFFlat); cosine similarity search (Goal 17); or search API (Goal 18).
+**Not claimed:** live PostgreSQL + pgvector server execution in the default test suite (opt-in only; no local instance available); production Supabase migration execution; vector indexes (HNSW/IVFFlat); query-text embedding (Goal 19); or the final public response schema (Goal 21). Goal 17 (cosine search) is ACCEPTED and the Goal 18 endpoint is IMPLEMENTED-PENDING-REVIEW.
 
 ### Goal 14 — BGE-M3 installation & environment validation
 

@@ -731,7 +731,9 @@ def test_openapi_metadata_unchanged(client: TestClient) -> None:
     spec = client.get("/openapi.json").json()
     assert spec["info"]["title"] == "voxsearch-backend"
     assert spec["info"]["version"] == "0.1.0"
-    assert set(spec["paths"]) == {"/health", "/health/db"}
+    # Goal 18 adds the versioned search route; the unversioned alias is
+    # intentionally excluded from the generated schema.
+    assert set(spec["paths"]) == {"/health", "/health/db", "/api/v1/search"}
 
 
 def test_migration_head_and_history_unchanged() -> None:
