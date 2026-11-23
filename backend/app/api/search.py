@@ -14,8 +14,8 @@ Scope boundary (see ``progress.md``):
 * Goal 20: top-10 vector retrieval, owned by
   :class:`app.services.retrieval.VectorRetrievalService`; the endpoint only maps
   its outcome to HTTP.
-* Goal 21: the final public response schema. The minimal envelope below exists
-  only so the endpoint can return a useful, bounded payload.
+* Goal 21: the final public response schema lives in :mod:`app.api.schemas`;
+  this module only populates it from retrieval results.
 
 No model is loaded in this process: the query embedder launches the optional
 isolated interpreter as a subprocess only when ``query`` is supplied.
@@ -40,6 +40,7 @@ from pydantic import (
 )
 from sqlalchemy.orm import Session
 
+from app.api.schemas import SearchHit, SearchResponse
 from app.db.session import get_db
 from app.embeddings.contracts import DENSE_DIMENSION, EmbeddingError, InvalidEmbeddingInputError
 from app.embeddings.query import QueryEmbeddingService
@@ -77,38 +78,6 @@ class SearchRequest(BaseModel):
         if (self.query is None) == (self.query_vector is None):
             raise ValueError("provide exactly one of query or query_vector")
         return self
-
-
-class SearchHit(BaseModel):
-    """One ranked chunk returned by the endpoint (no raw embedding)."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    video_id: UUID
-    transcript_asset_id: UUID
-    content_right_id: UUID
-    chunk_index: int
-    text: str
-    start_ms: int
-    end_ms: int
-    duration_ms: int
-    timestamp_precision: str
-    word_count: int
-    boundary_reason: str
-    source_segment_refs: list[str]
-    overlap_sentence_indices: list[int]
-    diagnostics: list[str]
-    model_id: str
-    distance: float
-    score: float
-
-
-class SearchResponse(BaseModel):
-    """Minimal response envelope for the Goal 18 endpoint."""
-
-    count: int
-    results: list[SearchHit]
 
 
 def get_search_service(
@@ -175,6 +144,8 @@ def search(
         ) from exc
 
     return SearchResponse(
+        query=payload.query,
+        top_k=payload.top_k,
         count=len(results),
         results=[SearchHit.model_validate(result) for result in results],
     )

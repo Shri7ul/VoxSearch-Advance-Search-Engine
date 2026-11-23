@@ -17,7 +17,8 @@ FastAPI backend for VoxSearch.
 > the **search HTTP endpoint** (Goal 18, ACCEPTED; `POST /api/v1/search`) and
 > **natural-language query embedding** (Goal 19, ACCEPTED; generated in the
 > isolated worker), and **top-10 vector retrieval** (Goal 20, ACCEPTED; live DB
-> verification pending). ASR, reranking, and the search frontend are
+> verification pending), and the **structured JSON response schema** (Goal 21,
+> ACCEPTED; live DB verification pending). ASR, reranking, and the search frontend are
 > **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
@@ -1532,12 +1533,64 @@ remains an HTTP-only layer. Review added one evidence-focused regression test
 
 ### Explicitly out of scope (NOT implemented)
 
-- Goal 21 (final public response schema), reranking, hybrid / lexical retrieval,
-  vector indexes, migrations, writes, and any model loading in the API process.
+- Goal 21 (final public response schema, tracked in §18), reranking, hybrid /
+  lexical retrieval, vector indexes, migrations, writes, and any model loading
+  in the API process.
+
+---
+
+## 18. Goal 21 — Search response schema (Structured JSON)
+
+> **Status: ACCEPTED** (independent adversarial review complete, offline
+> validation passed). Live database and real-model inference are NOT VERIFIED.
+
+### Review outcome
+
+The adversarial review found one genuine defect: the documented `score = 1 -
+distance` contract was not enforced, so contradictory pairs (e.g. distance 0.25
+with score 0.9) were accepted. `SearchHit` now has a model validator enforcing
+that relationship with a 1e-6 float tolerance; regression tests cover
+contradictory pairs, exact boundaries (0/1/2) and serialization drift. All other
+review areas (schema boundaries, envelope consistency, extra/non-finite
+rejection, OpenAPI accuracy, endpoint integration, and Goal 17/19/20
+regressions) were verified with no defect found.
+
+### Scope
+
+- `app/api/schemas.py` — the single source of truth for the public search JSON:
+  `SearchHit` (per-chunk fields) and `SearchResponse` (envelope). It is
+  independent of the HTTP transport (Goal 18), query embedding (Goal 19) and
+  retrieval (Goal 20).
+- The envelope contains `query`, `top_k`, `count` and `results`; a model
+  validator enforces `count == len(results)` and `count <= top_k`.
+- `SearchHit` documents every field, bounds `distance` to `[0, 2]` and `score`
+  to `[-1, 1]`, rejects extra fields and non-finite numbers, and has **no**
+  embedding field. Raw embeddings are never serialized.
+- `app/api/search.py` only populates the schema from Goal 20 results; no
+  transport-layer schema logic remains there.
+- `tests/test_search_response_schema.py` — 22 focused tests.
+
+### Explicitly out of scope (NOT implemented)
+
+- Goal 22+ (hybrid search / FTS), reranking, frontend, migrations, writes, and
+  any model loading in the API process.
 
 ---
 
 ## Validation performed
+
+### Goal 21 — Search response schema
+
+- Focused tests (`tests/test_search_response_schema.py`): **22 passed** —
+  verbatim hit mapping without embeddings, invalid/extra field rejection,
+  finite and bounded distance/score, enforced `score = 1 - distance` with
+  boundary and drift cases, consistent envelope validation, OpenAPI
+  documentation of every field, and query echo via the endpoint.
+- Goal 18 API: **42 passed**; Goal 20 retrieval: **12 passed**; Goal 19:
+  **19 passed**; Goal 17: **96 passed**; Goal 15/16: **205 passed, 1 skipped**.
+- Full backend suite: **1156 passed, 4 skipped, 1 warning**; `py_compile` clean;
+  `git diff --check` clean.
+- Not verified: live PostgreSQL/pgvector retrieval and real BGE-M3 inference.
 
 ### Goal 20 — Vector retrieval
 

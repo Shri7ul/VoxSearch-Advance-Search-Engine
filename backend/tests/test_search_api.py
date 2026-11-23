@@ -86,7 +86,12 @@ def _post(client: TestClient, path: str = VERSIONED_PATH, **body: Any):
 def test_search_endpoint_is_registered(client: TestClient, path: str) -> None:
     response = _post(client, path)
     assert response.status_code == 200
-    assert response.json() == {"count": 0, "results": []}
+    assert response.json() == {
+        "query": None,
+        "top_k": 10,
+        "count": 0,
+        "results": [],
+    }
 
 
 def test_get_search_is_not_allowed(client: TestClient) -> None:
