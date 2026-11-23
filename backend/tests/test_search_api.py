@@ -248,6 +248,29 @@ def test_top_k_inclusive_bounds_are_accepted(client: TestClient, good_k: int) ->
     assert response.status_code == 200
 
 
+@pytest.mark.parametrize("explicit_k,expected_limit", [(None, 10), (7, 7)])
+def test_request_limit_reaches_sql_end_to_end(
+    client: TestClient, session: MagicMock, explicit_k: int | None, expected_limit: int
+) -> None:
+    """API -> retrieval -> service -> repository must emit the expected LIMIT.
+
+    This is the direct test evidence for Goal 20's "Top 10 results" achieve
+    condition: a request without ``top_k`` really issues ``LIMIT 10``.
+    """
+    from sqlalchemy.dialects import postgresql
+
+    body = {"query_vector": UNIT_VECTOR}
+    if explicit_k is not None:
+        body["top_k"] = explicit_k
+    response = client.post(VERSIONED_PATH, json=body)
+    assert response.status_code == 200
+
+    statement = session.execute.call_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    assert "LIMIT" in str(compiled)
+    assert expected_limit in list(compiled.params.values())
+
+
 # --- 5. OpenAPI documentation -----------------------------------------------
 
 def test_openapi_documents_bounded_request_and_embedding_free_response(

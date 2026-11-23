@@ -16,8 +16,9 @@ FastAPI backend for VoxSearch.
 > **cosine similarity retrieval** (Goal 17, ACCEPTED; live PostgreSQL verification pending), and
 > the **search HTTP endpoint** (Goal 18, ACCEPTED; `POST /api/v1/search`) and
 > **natural-language query embedding** (Goal 19, ACCEPTED; generated in the
-> isolated worker). ASR, reranking, and the search frontend
-> are **not** implemented.
+> isolated worker), and **top-10 vector retrieval** (Goal 20, ACCEPTED; live DB
+> verification pending). ASR, reranking, and the search frontend are
+> **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
 > `backend/.venv-embedding` (see §11); Goal 15 builds a torch-free contract
@@ -1453,8 +1454,8 @@ batch = generate_embeddings(["a short sentence", "another sentence"],
 
 ### Explicitly out of scope (NOT implemented)
 
-- Goal 20 (additional retrieval policies), Goal 21 (final public response
-  schema), Goal 22+ (hybrid search), reranking, and the frontend.
+- Goal 21 (final public response schema), Goal 22+ (hybrid search), reranking,
+  and the frontend. Goal 20's top-10 retrieval is implemented in §17.
 - No migration, no production database access, no `.env` access.
 
 ---
@@ -1489,11 +1490,67 @@ batch = generate_embeddings(["a short sentence", "another sentence"],
 The Goal 18 endpoint accepts either `query` (Goal 19) or `query_vector`
 (Goal 18), never both and never neither. Invalid query text maps to HTTP 422;
 worker/model/inference failures map to HTTP 503. The generated vector is passed
-to the unchanged Goal 17 service; response payloads still contain no embedding.
+to the top-10 retrieval layer in §17; response payloads still contain no
+embedding.
+
+---
+
+## 17. Goal 20 — Vector retrieval (top 10 results)
+
+> **Status: ACCEPTED** (independent adversarial review complete, offline
+> validation passed). Live database and real-model inference are NOT VERIFIED.
+
+### Review outcome
+
+The adversarial review found **no genuine defect**. Verified: the top-10 default
+is consistent across API, retrieval service and repository; exactly one query
+source is enforced at both API and service layers; embedding is invoked only for
+`query` and bypassed for `query_vector`; Goal 17 ranking, filters,
+filter-before-limit and the no-embedding contract are unchanged; domain and
+embedding errors map to 422 / 503 without internal detail leakage; and the API
+remains an HTTP-only layer. Review added one evidence-focused regression test
+(default request emits SQL `LIMIT 10`; explicit `top_k=7` emits `LIMIT 7`).
+
+### Scope and architecture
+
+- `app/services/retrieval.py` — `VectorRetrievalService` is the application-level
+  retrieval step. It composes Goal 19's `QueryEmbeddingService` with Goal 17's
+  `VideoChunkSearchService` and owns the **top-10 policy**:
+  `DEFAULT_TOP_K = 10` is used when no explicit bound is supplied. An explicit
+  `top_k` is forwarded unchanged and validated by Goal 17's accepted `[1, 100]`
+  bound — this goal does not narrow or replace that contract.
+- Exactly one of `query` / `query_vector` is required; a violation raises the
+  typed `InvalidRetrievalRequestError` (mapped to HTTP 422 by §15).
+- Ranking (`distance, chunk_index, id`), filtering, bounded `top_k` and the
+  no-embedding result contract remain Goal 17's; the retrieval layer neither
+  reorders nor enriches results.
+- The Goal 18 endpoint now obtains this service through
+  `get_vector_retrieval_service` and only maps outcomes to HTTP. Response
+  payloads are unchanged.
+- `tests/test_vector_retrieval.py` — 12 focused tests. `tests/test_search_api.py`
+  has 42 tests after the review's end-to-end LIMIT regression.
+
+### Explicitly out of scope (NOT implemented)
+
+- Goal 21 (final public response schema), reranking, hybrid / lexical retrieval,
+  vector indexes, migrations, writes, and any model loading in the API process.
 
 ---
 
 ## Validation performed
+
+### Goal 20 — Vector retrieval
+
+- Focused tests (`tests/test_vector_retrieval.py`): **12 passed** — top-10
+  default and explicit `top_k` forwarding, query-text embedding composition,
+  precomputed-vector bypass, filter forwarding, exactly-one-source rule,
+  ranked order and result shape, empty results, and error propagation.
+- Combined search-focused tests: **73 passed** (12 retrieval + 19 query +
+  42 endpoint); Goal 17 regressions: **96 passed**; Goal 15/16 regressions:
+  **205 passed, 1 skipped**; full backend suite: **1134 passed, 4 skipped,
+  1 warning**. `py_compile` clean; `git diff --check` clean.
+- Not verified: live PostgreSQL/pgvector retrieval and real BGE-M3 inference
+  (no local DB, no `VOXSEARCH_EMBEDDING_PYTHON`, no model cache).
 
 ### Goal 19 — Query embedding
 
