@@ -19,7 +19,8 @@ FastAPI backend for VoxSearch.
 > isolated worker), and **top-10 vector retrieval** (Goal 20, ACCEPTED; live DB
 > verification pending), and the **structured JSON response schema** (Goal 21,
 > ACCEPTED; live DB verification pending), and **PostgreSQL full-text keyword
-> retrieval** (Goal 22, ACCEPTED; offline SQL only). ASR,
+> retrieval** (Goal 22, ACCEPTED; offline SQL only), and **dual dense+lexical
+> retrieval** (Goal 23, ACCEPTED). ASR,
 > reranking, and the search frontend are **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
@@ -1615,12 +1616,55 @@ separation) were verified with no defect found.
 
 ### Explicitly out of scope (NOT implemented)
 
-- GIN index / migration, HTTP endpoint, dense+lexical combination (Goal 23),
-  RRF (Goal 24), dedup (Goal 25), reranking, frontend, and any model load.
+- GIN index / migration, HTTP endpoint, dense+lexical combination (Goal 23,
+  tracked in §20), RRF (Goal 24), dedup (Goal 25), reranking, frontend, and any
+  model load.
+
+---
+
+## 20. Goal 23 — Dense + lexical retrieval (two kinds of result)
+
+> **Status: ACCEPTED** (independent adversarial review complete, offline
+> validation passed). Live PostgreSQL / real-model inference NOT VERIFIED.
+
+### Review outcome
+
+The adversarial review found one genuine consistency defect: `retrieve()` used a
+hard-coded `top_k=10` instead of the shared `DEFAULT_TOP_K` constant used by
+Goals 17/20/22, risking silent divergence. It now uses the shared constant, with
+a signature-level regression assertion. All other areas (composition,
+identical query/filter/top_k forwarding, native ordering, separate result sets,
+immutability, error propagation, and absence of RRF/dedup/endpoint) were
+verified with no defect.
+
+### Scope and architecture
+
+- `app/services/hybrid_retrieval.py` — `HybridRetrievalService` runs the accepted
+  Goal 20 `VectorRetrievalService` and Goal 22 `KeywordSearchService` over the
+  same query, filters and `top_k`, with no duplicated validation or business
+  logic.
+- The immutable `HybridRetrievalResult` holds two independent result sets:
+  `dense` (Goal 17 `ChunkSearchResult`, cosine distance / score) and `lexical`
+  (Goal 22 `LexicalSearchResult`, PostgreSQL `ts_rank`). Native ordering and
+  score semantics are preserved separately.
+- No RRF (Goal 24), deduplication (Goal 25), re-ranking, HTTP endpoint,
+  migration, index, new dependency or write is added. Failures from either path
+  propagate unchanged.
+- `tests/test_hybrid_retrieval.py` — 8 focused tests.
 
 ---
 
 ## Validation performed
+
+### Goal 23 — Dense + lexical retrieval
+
+- Focused tests (`tests/test_hybrid_retrieval.py`): **8 passed** — same
+  query/filters/top_k to both paths, two separate unchanged result sets, no
+  fusion / dedup / RRF fields, shared `DEFAULT_TOP_K` default, empty sets,
+  failure propagation from either path, and immutability.
+- Full backend suite: **1197 passed, 4 skipped, 1 warning**; `py_compile` clean;
+  `git diff --check` clean.
+- Not verified: live PostgreSQL FTS, pgvector retrieval and real BGE-M3 inference.
 
 ### Goal 22 — PostgreSQL FTS
 
