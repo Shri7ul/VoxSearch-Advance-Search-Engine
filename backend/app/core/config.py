@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # actually requested. SecretStr masks the value in repr/str.
     database_url: SecretStr | None = None
 
+    # Goal 34: optional YouTube Data API authentication. The key is SecretStr so
+    # repr/str never reveal it; the base URL is public and fixed by default.
+    youtube_api_key: SecretStr | None = None
+    youtube_api_base_url: str = "https://www.googleapis.com/youtube/v3"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

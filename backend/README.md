@@ -2197,3 +2197,29 @@ migration. No coverage numbers are claimed.
 - `uvicorn app.main:app --host 127.0.0.1 --port 8000` + `curl /health`
 
 See the Goal 02–04 final reports in the session history for recorded results.
+
+---
+
+## 26. Goal 34 — YouTube API setup (API authentication)
+
+> **Status: ACCEPTED** (adversarial audit complete, offline validation passed).
+> Live YouTube authentication with a real API key is NOT VERIFIED.
+
+Audit fixes: the probe now calls `i18nLanguages.list(part=snippet)` (a valid
+API-key method that returns no video data), and closed 403 reasons are
+classified into `YouTubeQuotaError` / `YouTubeAccessRestrictedError` rather
+than being reported as bad credentials. Focused tests: 31 passed; full backend
+suite: 1367 passed, 5 skipped, 1 warning.
+
+- `app/youtube/client.py` — immutable `YouTubeCredentials` (SecretStr key,
+  fixed allowlisted HTTPS base URL), `YouTubeApiClient.from_settings`, and
+  an authenticated urlencoded URL builder whose `key` cannot be overridden
+  by caller parameters. `verify_authentication()` is a minimal read-only
+  probe through an injectable stdlib transport; it returns no video data.
+- Auth (400/401/403), transport and malformed-response failures map to closed,
+  credential-free errors. No key appears in `repr`, errors or logs, and no
+  network call happens at import time.
+- `.env.example` documents placeholder names only. No video discovery,
+  channel registry or OAuth flow (Goals 35–38), no migration and no new
+  dependency was added.
+- `tests/test_youtube_api_setup.py` — 31 tests with a mocked transport.
