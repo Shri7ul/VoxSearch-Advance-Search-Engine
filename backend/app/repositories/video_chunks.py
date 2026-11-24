@@ -193,6 +193,45 @@ class VideoChunkRepository(BaseRepository):
         stmt = stmt.order_by(VideoChunk.chunk_index.asc(), VideoChunk.id.asc())
         return list(self.session.scalars(stmt).all())
 
+    def list_context_chunks(
+        self,
+        *,
+        transcript_asset_id: uuid.UUID,
+        chunk_index: int,
+        model_id: str | None = None,
+        radius: int = 1,
+    ) -> list[tuple[int, str, int, int]]:
+        """Read-only neighbouring chunks for Goal 28 context expansion.
+
+        Only rows from the SAME transcript asset (and, when supplied, the SAME
+        embedding model) within ``chunk_index +/- radius`` are returned; the
+        target chunk itself is excluded. Results are ordered by distance from
+        the target (then chunk_index) and bounded to ``2 * radius`` rows. No
+        embedding column is selected and no write is performed.
+        """
+        if not isinstance(chunk_index, int) or isinstance(chunk_index, bool):
+            raise ValueError("chunk_index must be an integer")
+        if not isinstance(radius, int) or isinstance(radius, bool) or radius < 1:
+            raise ValueError("radius must be a positive integer")
+        distance = func.abs(VideoChunk.chunk_index - chunk_index).label("distance")
+        stmt = select(
+            VideoChunk.chunk_index,
+            VideoChunk.text,
+            VideoChunk.start_ms,
+            VideoChunk.end_ms,
+        ).where(
+            VideoChunk.transcript_asset_id == transcript_asset_id,
+            VideoChunk.chunk_index != chunk_index,
+            VideoChunk.chunk_index >= chunk_index - radius,
+            VideoChunk.chunk_index <= chunk_index + radius,
+        )
+        if model_id is not None:
+            stmt = stmt.where(VideoChunk.model_id == model_id)
+        stmt = stmt.order_by(distance.asc(), VideoChunk.chunk_index.asc()).limit(
+            2 * radius
+        )
+        return [tuple(row) for row in self.session.execute(stmt).all()]
+
     def search_similar(
         self,
         query_vector: Sequence[float],

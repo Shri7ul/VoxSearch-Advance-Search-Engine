@@ -23,7 +23,8 @@ FastAPI backend for VoxSearch.
 > retrieval** (Goal 23, ACCEPTED), and **RRF combined ranking** (Goal 24,
 > ACCEPTED), **duplicate removal** (Goal 25, ACCEPTED), and **BGE reranker
 > setup** (Goal 26, ACCEPTED; real model load not verified), and **candidate
-> reranking** (Goal 27, ACCEPTED; real inference not verified). ASR,
+> reranking** (Goal 27, ACCEPTED; real inference not verified), and
+> **context-aware matching** (Goal 28, ACCEPTED; real inference not verified). ASR,
 > reranking, and the search frontend are **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
@@ -1798,12 +1799,70 @@ leakage, and no Goal 28 or endpoint scope. No defect was found.
 
 ### Explicitly out of scope (NOT implemented)
 
-- Goal 28 surrounding-context matching, reranking quality metrics, HTTP
-  endpoint, new dependency, migration and any production write.
+- Goal 28 surrounding-context matching (tracked in §25), reranking quality
+  metrics, HTTP endpoint, new dependency, migration and any production write.
+
+---
+
+## 25. Goal 28 — Context-aware matching (Surrounding context included)
+
+> **Status: ACCEPTED** (independent adversarial audit complete, offline
+> validation passed). Actual BGE reranking inference and live
+> PostgreSQL/pgvector NOT VERIFIED.
+
+### Audit outcome
+
+The independent audit found one genuine defect: an injected context provider
+could supply chunks from a different video / transcript asset / model because
+provenance was not checked by the service. `ContextChunk` now carries required
+`video_id`, `transcript_asset_id` and `model_id`, validated against the target;
+regression cases cover foreign asset and foreign model. All other audit areas
+(context identity/ordering, target exclusion, gaps/duplicates/malformed data,
+combined-text bound, bounded read-only SQL, candidate preservation, Goal 27
+compatibility, failure propagation, no silent fallback, scope) were verified
+with no defect.
+
+### Architecture
+
+- `app/reranking/context.py` — `ContextExpansionService` builds a deterministic,
+  bounded context window from neighbouring chunks of the SAME transcript asset
+  and model. It excludes the target chunk, rejects duplicate / malformed /
+  blank provider data, sorts by chunk index, and caps the COMBINED scoring text
+  at the isolated worker's 8192-character limit. Missing or empty context yields
+  the verbatim target text (no unrelated fallback ranking).
+- `RepositoryContextProvider` uses the new read-only
+  `VideoChunkRepository.list_context_chunks` (bounded SQL by asset / model /
+  index radius, deterministic order, no embedding column, no writes).
+- `ContextAwareRerankingService` passes enriched text to the accepted Goal 27
+  reranker via an additive optional `texts` mapping keyed by stable chunk id.
+  The ORIGINAL `FusedCandidate` objects, identity, timestamps, provenance and
+  ranks are preserved.
+- Tests: `tests/test_context_expansion.py` (26),
+  `tests/test_context_repository.py` (5), and 5 added Goal 27 `texts` cases.
+  `ContextChunk` provenance fields are required and checked against the target.
+
+### Explicitly out of scope (NOT implemented)
+
+- Goal 29 frontend, HTTP endpoint, model load in the core process, migration,
+  new dependency, production write and reranking quality metrics.
 
 ---
 
 ## Validation performed
+
+### Goal 28 — Context-aware matching
+
+- Focused tests: **61 passed** (26 context expansion + 5 repository + 30
+  candidate reranking) — deterministic sorted context, target exclusion,
+  duplicate/malformed/foreign-provenance rejection, char bounds,
+  combined-text limit, empty context, original-candidate preservation and
+  text-override validation.
+- Reranking/setup: **39 passed, 1 skipped**; full backend suite: **1321 passed,
+  5 skipped, 1 warning**; `py_compile` clean; `git diff --check` clean.
+- Self-review fixed one genuine defect: a long target chunk plus context could
+  exceed the worker's 8192-character text limit; the context budget now shrinks
+  to the remaining capacity and unused chunks are dropped.
+- Not verified: actual BGE reranking inference and live PostgreSQL/pgvector.
 
 ### Goal 27 — Candidate reranking
 

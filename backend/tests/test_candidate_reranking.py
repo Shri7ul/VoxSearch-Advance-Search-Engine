@@ -164,6 +164,40 @@ def test_scorer_failure_propagates_without_fallback() -> None:
         service.rerank("query", [_candidate(0)])
 
 
+def test_texts_override_changes_only_scoring_text() -> None:
+    candidate = _candidate(0)
+    service, scorer = _service([0.5])
+    result = service.rerank(
+        "query", [candidate], texts={candidate.chunk_id: "context-enriched text"}
+    )
+    assert scorer.calls == [[["query", "context-enriched text"]]]
+    assert result[0].candidate is candidate
+    assert result[0].candidate.chunk.text == "chunk text 0"
+
+
+def test_missing_texts_key_falls_back_to_verbatim_chunk_text() -> None:
+    candidate = _candidate(0)
+    service, scorer = _service([0.5])
+    service.rerank("query", [candidate], texts={uuid.uuid4(): "other"})
+    assert scorer.calls == [[["query", "chunk text 0"]]]
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ["not-a-mapping"],
+        {True: "text"},
+        {uuid.uuid4(): 123},
+        {uuid.uuid4(): "   "},
+    ],
+)
+def test_invalid_texts_mapping_is_rejected(texts: Any) -> None:
+    service, scorer = _service([0.5])
+    with pytest.raises(InvalidRerankInputError):
+        service.rerank("query", [_candidate(0)], texts=texts)
+    assert scorer.calls == []
+
+
 def test_no_embedding_field_is_exposed() -> None:
     service, _ = _service([0.5])
     result = service.rerank("query", [_candidate(0)])

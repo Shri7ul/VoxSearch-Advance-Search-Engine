@@ -14,7 +14,8 @@ unavailable or returns malformed output, the failure propagates unchanged.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+import uuid
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -74,15 +75,32 @@ class CandidateRerankingService:
         return self._config
 
     def rerank(
-        self, query: str, candidates: Sequence[FusedCandidate]
+        self,
+        query: str,
+        candidates: Sequence[FusedCandidate],
+        *,
+        texts: Mapping[uuid.UUID, str] | None = None,
     ) -> list[RerankedCandidate]:
-        """Return ``candidates`` reordered by BGE score (best first)."""
+        """Return ``candidates`` reordered by BGE score (best first).
+
+        ``texts`` is an optional Goal 28 context-aware override keyed by the
+        candidate's stable chunk id. It changes only the text sent to the
+        reranker — never the candidate object, identity, ranking inputs or
+        metadata. A missing id falls back to the verbatim chunk text.
+        """
         validated_query = self._validate_query(query)
         validated_candidates = self._validate_candidates(candidates)
         if not validated_candidates:
             return []
+        validated_texts = self._validate_texts(texts)
 
-        pairs = [[validated_query, item.chunk.text] for item in validated_candidates]
+        pairs = [
+            [
+                validated_query,
+                validated_texts.get(item.chunk_id, item.chunk.text),
+            ]
+            for item in validated_candidates
+        ]
         scorer = self._scorer
         if scorer is None:
             from reranker_worker.client import SubprocessRerankerProvider
@@ -127,6 +145,25 @@ class CandidateRerankingService:
                 f"at most {MAX_CANDIDATES} candidates are allowed, got {len(candidates)}"
             )
         return list(candidates)
+
+    @staticmethod
+    def _validate_texts(
+        texts: Mapping[uuid.UUID, str] | None,
+    ) -> dict[uuid.UUID, str]:
+        if texts is None:
+            return {}
+        if not isinstance(texts, Mapping):
+            raise InvalidRerankInputError("texts must be a mapping")
+        validated: dict[uuid.UUID, str] = {}
+        for chunk_id, text in texts.items():
+            if not isinstance(chunk_id, uuid.UUID):
+                raise InvalidRerankInputError("texts keys must be UUIDs")
+            if not isinstance(text, str) or not text.strip():
+                raise InvalidRerankInputError("texts values must be non-empty strings")
+            if len(text) > MAX_QUERY_CHARACTERS:
+                raise InvalidRerankInputError("texts value is too large")
+            validated[chunk_id] = text  # verbatim: never normalized
+        return validated
 
     @staticmethod
     def _rank(
