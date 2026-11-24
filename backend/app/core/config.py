@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     redis_password: SecretStr | None = None
     redis_queue_key: str = "voxsearch:jobs"
 
+    # Goal 41: bounded domain-level retry policy for failed background jobs.
+    retry_max_attempts: int = 3
+    retry_base_delay_seconds: float = 1.0
+    retry_max_delay_seconds: float = 30.0
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -13,6 +13,17 @@ from app.workers.celery_app import (
 from app.workers.dispatcher import JobDispatcher, JobResult
 from app.workers.jobs import JobEnvelope, JobValidationError
 from app.workers.registry import TaskRegistry
+from app.workers.retry import (
+    PermanentJobError,
+    RetryConfigError,
+    RetryError,
+    RetryExhaustedError,
+    RetryExecutor,
+    RetryPolicy,
+    RetryResult,
+    RetryableJobError,
+    is_retryable,
+)
 
 __all__ = [
     "CeleryConfig",
@@ -25,4 +36,13 @@ __all__ = [
     "JobResult",
     "JobValidationError",
     "TaskRegistry",
+    "PermanentJobError",
+    "RetryConfigError",
+    "RetryError",
+    "RetryExhaustedError",
+    "RetryExecutor",
+    "RetryPolicy",
+    "RetryResult",
+    "RetryableJobError",
+    "is_retryable",
 ]

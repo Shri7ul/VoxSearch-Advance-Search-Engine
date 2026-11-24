@@ -6,6 +6,7 @@ from typing import Any
 
 from app.workers.jobs import JobEnvelope, JobValidationError
 from app.workers.registry import TaskRegistry
+from app.workers.retry import RetryExecutor, RetryPolicy
 
 
 @dataclass(frozen=True)
@@ -20,8 +21,19 @@ class JobResult:
 class JobDispatcher:
     """Validate, look up and run background jobs without retry logic."""
 
-    def __init__(self, registry: TaskRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: TaskRegistry | None = None,
+        *,
+        retry_policy: RetryPolicy | None = None,
+        retry_executor: RetryExecutor | None = None,
+    ) -> None:
         self._registry = registry or TaskRegistry()
+        # Goal 41: retries are opt-in for a dispatcher; Celery's own retry
+        # mechanism is never configured here, so there is one retry layer.
+        self._retry = retry_executor or (
+            RetryExecutor(retry_policy) if retry_policy is not None else None
+        )
         # Minimal, dependency-free health job so a default worker is usable.
         # Indexing / ingestion jobs belong to Goal 42 and are NOT registered.
         if "ping" not in self._registry.names():
@@ -38,7 +50,10 @@ class JobDispatcher:
             else JobEnvelope.from_mapping(value)
         )
         handler = self._registry.get(envelope.task)
-        output = handler(dict(envelope.payload))
+        if self._retry is not None:
+            output = self._retry.execute(envelope, handler).output
+        else:
+            output = handler(dict(envelope.payload))
         return JobResult(
             job_id=str(envelope.job_id), task=envelope.task, output=output
         )

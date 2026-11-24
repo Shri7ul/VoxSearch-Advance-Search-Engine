@@ -2350,3 +2350,23 @@ Focused tests: 25 passed; full backend suite: 1567 passed, 5 skipped, 1 warning.
 - No retry policy (41), indexing automation (42), DB write or migration.
 - Secrets remain SecretStr-masked in repr and errors.
 - `tests/test_celery_worker.py` — 25 tests with a fake Celery module.
+
+---
+
+## 33. Goal 41 — Retry mechanism (Failed jobs retry)
+
+> **Status: ACCEPTED** (adversarial audit complete, mocked-sleep tests passed).
+> Live Redis/Celery retry behavior NOT VERIFIED.
+
+Audit fixes: extreme backoff exponents are capped before the delay ceiling,
+and retry-exhaustion errors suppress raw secret-bearing causes. Focused tests:
+20 passed; full backend suite: 1587 passed, 5 skipped, 1 warning.
+
+- `app/workers/retry.py` — validated `RetryPolicy` (1–10 attempts, bounded
+  exponential backoff), explicit permanent/transient classification and
+  `RetryExecutor` preserving job identity with credential-free errors.
+- Retries are opt-in on the Goal 40 dispatcher; Celery autoretry is not
+  configured, so there is one documented retry layer.
+- No import-time network, Celery dependency leak, DB write, migration or
+  Goal 42 indexing automation.
+- `tests/test_retry_mechanism.py` — 20 tests with mocked sleeps.
