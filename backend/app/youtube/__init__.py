@@ -4,9 +4,20 @@ No video discovery, metadata retrieval, channel registry or OAuth flow is
 implemented here; those are Goals 35–37. Real keys come only from environment /
 the git-ignored local `.env` and are held as ``SecretStr``.
 """
+from app.youtube.transcript_adapter import (
+    CaptionTrack,
+    CaptionUnavailableError,
+    InvalidTranscriptResponseError,
+    TranscriptAdapterError,
+    TranscriptTransportError,
+    YouTubeTranscriptAdapter,
+    parse_vtt,
+    validate_caption_id,
+)
 from app.youtube.oauth import (
     GOOGLE_AUTHORIZE_URL,
     GOOGLE_TOKEN_URL,
+    YOUTUBE_FORCE_SSL_SCOPE,
     YOUTUBE_READONLY_SCOPE,
     OAuthAuthorizationError,
     OAuthConfig,
@@ -52,8 +63,17 @@ from app.youtube.client import (
 )
 
 __all__ = [
+    "CaptionTrack",
+    "CaptionUnavailableError",
+    "InvalidTranscriptResponseError",
+    "TranscriptAdapterError",
+    "TranscriptTransportError",
+    "YouTubeTranscriptAdapter",
+    "parse_vtt",
+    "validate_caption_id",
     "GOOGLE_AUTHORIZE_URL",
     "GOOGLE_TOKEN_URL",
+    "YOUTUBE_FORCE_SSL_SCOPE",
     "YOUTUBE_READONLY_SCOPE",
     "OAuthAuthorizationError",
     "OAuthConfig",

@@ -30,6 +30,8 @@ from app.core.config import Settings, get_settings
 GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 YOUTUBE_READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly"
+# Goal 38 caption listing/download requires this stronger scope (official docs).
+YOUTUBE_FORCE_SSL_SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl"
 DEFAULT_TIMEOUT_SECONDS = 10.0
 MAX_STATE_ENTRIES = 128
 STATE_TTL_SECONDS = 600.0
@@ -323,6 +325,7 @@ class OAuthWorkflow:
 __all__ = [
     "GOOGLE_AUTHORIZE_URL",
     "GOOGLE_TOKEN_URL",
+    "YOUTUBE_FORCE_SSL_SCOPE",
     "YOUTUBE_READONLY_SCOPE",
     "OAuthAuthorizationError",
     "OAuthConfig",

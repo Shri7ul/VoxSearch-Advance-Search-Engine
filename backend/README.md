@@ -2291,3 +2291,22 @@ full backend suite: 1469 passed, 5 skipped, 1 warning.
 - No HTTP routes, token persistence, Goal 38 transcript ingestion, DB writes,
   migrations, new dependencies or import-time network.
 - `tests/test_youtube_oauth.py` — 37 tests with a mocked transport.
+
+---
+
+## 30. Goal 38 — Transcript source adapter
+
+> **Status: ACCEPTED** (adversarial audit complete, mocked-transport validation
+> passed). Real YouTube caption access and live ingestion NOT VERIFIED.
+
+Audit fix: `captions.download` now uses the official path form `captions/{id}`
+with validated, URL-quoted caption IDs; `tfmt=vtt` remains a query parameter.
+Focused tests: 28 passed; full backend suite: 1497 passed, 5 skipped, 1 warning.
+
+- `app/youtube/transcript_adapter.py` — `captions.list` metadata + `captions/download?tfmt=vtt` via OAuth Bearer token requiring `youtube.force-ssl` (the API key alone cannot list or download captions).
+- Caption track validation, human-over-ASR selection, bounded VTT parsing
+(`HH:MM:SS.mmm` and `MM:SS.mmm`), verbatim cue text, and conversion into the
+existing validated `TranscriptInput` with internal video/rights UUIDs.
+- No duplicate normalization/segmentation/chunking, no ingestion call, no DB
+write, migration, new dependency, Phase 10 queue or token leakage.
+- `tests/test_youtube_transcript_adapter.py` — 28 tests with a mocked transport.
