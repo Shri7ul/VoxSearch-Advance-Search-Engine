@@ -2409,3 +2409,23 @@ tests: 35 passed; full backend suite: 1634 passed, 5 skipped, 1 warning.
 - No network, DB, model or live search call; no Goal 45/46 work.
 - `tests/test_evaluation_dataset.py` and `tests/test_retrieval_evaluation.py`
   cover validation, boundaries and Goal 43→44 integration.
+
+---
+
+## 36. Goals 45–46 — Timestamp MAE and P95 latency benchmark
+
+> **Status: both ACCEPTED** (adversarial audits complete, deterministic tests
+> passed). Live retrieval/video/model timing NOT VERIFIED.
+
+Audit fixes: timestamp judgment ids must be non-empty strings, and the latency
+benchmark now supports bounded warm-up with explicit documentation that
+injected-clock tests are not real performance measurements. Combined focused
+tests: 41 passed; full backend suite: 1675 passed, 5 skipped, 1 warning.
+
+- `app/evaluation/timestamps.py` — immutable timestamp judgments/predictions
+  and exact start/end/combined MAE in milliseconds with bounded inputs.
+- `app/evaluation/performance.py` — deterministic nearest-rank p50/p95/max
+  latency report over an injected callable and monotonic clock.
+- No network, DB, model or live search call; no Goal 47 work.
+- `tests/test_timestamp_evaluation.py` and `tests/test_latency_benchmark.py`
+  cover boundaries, failure paths and determinism.
