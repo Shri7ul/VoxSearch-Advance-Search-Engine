@@ -2450,3 +2450,23 @@ suite: 1709 passed, 5 skipped, 1 warning.
   or external monitoring dependency.
 - No Goal 49/50 work, migration or production migration executed.
 - Tests: `test_production_docker.py` (7) and `test_monitoring.py` (26).
+
+---
+
+## 38. Goals 49–50 — Backup/recovery and compliance gate
+
+> **Status: both ACCEPTED** (adversarial audits complete, deterministic tests
+> passed). No live production backup, deployment or launch occurred.
+
+Audit fixes: recovery now claims content equality only after byte-for-byte
+read-back, and the launch gate accepts optional evidence for every fact.
+Combined focused tests: 23 passed; full backend suite: 1732 passed, 5 skipped,
+1 warning.
+
+- `app/deployment/backup.py` — bounded in-memory backups with SHA-256
+  checksums, secret-like name rejection, injected restore sink and a
+  deterministic recovery round-trip report.
+- `app/deployment/compliance.py` — immutable compliance checks and a
+  launch gate that reports blockers instead of claiming MVP readiness.
+- No Goal 51 or roadmap extension; no migration or production write.
+- Tests: `test_backup_recovery.py` (10) and `test_compliance_review.py` (10).

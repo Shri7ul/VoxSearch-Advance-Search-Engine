@@ -156,7 +156,7 @@ The roadmap is tracked in phases; the canonical numbered Goal tracker is `progre
 | Phase 9 — YouTube Integration | 34–38 | YouTube API, discovery, channel registry, auth | **34–38 ACCEPTED** |
 | Phase 10 — Background Processing | 39–42 | Redis, Celery, retries, indexing automation | **39–42 ACCEPTED** |
 | Phase 11 — Evaluation & Optimization | 43–46 | Test queries, Recall/MRR/nDCG, timestamp MAE, P95 | **43–46 ACCEPTED** |
-| Phase 12 — Production Deployment | 47–50 | Production Docker, monitoring, backup/security, launch | **47–48 ACCEPTED; 49–50 planned** |
+| Phase 12 — Production Deployment | 47–50 | Production Docker, monitoring, backup/security, launch | **47–50 ACCEPTED** |
 
 > Roadmap detail lives in `progress.md`. This README summarizes it for orientation.
 
