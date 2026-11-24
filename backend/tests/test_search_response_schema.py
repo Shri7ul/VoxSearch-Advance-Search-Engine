@@ -57,6 +57,14 @@ def test_hit_maps_chunk_result_without_embedding() -> None:
     assert "embedding" not in SearchHit.model_fields
 
 
+def test_hit_exposes_youtube_video_id_for_timestamp_links() -> None:
+    payload = _hit_payload()
+    payload["youtube_video_id"] = "dQw4w9WgXcQ"
+    hit = SearchHit.model_validate(payload)
+    assert hit.youtube_video_id == "dQw4w9WgXcQ"
+    assert "youtube_video_id" in SearchHit.model_fields
+
+
 @pytest.mark.parametrize("bad_distance", [-0.1, 2.1, float("nan"), float("inf")])
 def test_hit_rejects_invalid_distance(bad_distance: float) -> None:
     payload = _hit_payload()

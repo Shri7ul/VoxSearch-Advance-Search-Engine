@@ -137,7 +137,19 @@ export default function HomePage() {
                 </div>
                 <p className="result-card__text">{card.text}</p>
                 <div className="result-card__foot">
-                  <span>{card.timing}</span>
+                  {card.timestampUrl !== null ? (
+                    <a
+                      className="result-card__timestamp"
+                      href={card.timestampUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={`Open video at ${card.timing}`}
+                    >
+                      {card.timing}
+                    </a>
+                  ) : (
+                    <span>{card.timing}</span>
+                  )}
                   {card.relevance !== null && <span>{card.relevance}</span>}
                   {card.precisionLabel !== null && (
                     <span>{card.precisionLabel}</span>

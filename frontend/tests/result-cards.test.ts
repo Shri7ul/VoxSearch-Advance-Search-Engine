@@ -32,6 +32,7 @@ test("card maps actual SearchHit fields with a 1-based rank", () => {
       chunk_index: 4,
       model_id: "BAAI/bge-m3",
       timestamp_precision: "word",
+      youtube_video_id: "dQw4w9WgXcQ",
     },
     0,
   );
@@ -44,6 +45,10 @@ test("card maps actual SearchHit fields with a 1-based rank", () => {
   assert.equal(card.modelLabel, "BAAI/bge-m3");
   assert.equal(card.precisionLabel, "word");
   assert.equal(card.text, base.text);
+  assert.equal(
+    card.timestampUrl,
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1s",
+  );
 });
 
 test("missing optional metadata is omitted, not fabricated", () => {
@@ -54,6 +59,15 @@ test("missing optional metadata is omitted, not fabricated", () => {
   assert.equal(card.chunkLabel, null);
   assert.equal(card.modelLabel, null);
   assert.equal(card.precisionLabel, null);
+  assert.equal(card.timestampUrl, null);
+});
+
+test("invalid youtube id in a result yields no link", () => {
+  const card = toResultCardModel(
+    { ...base, youtube_video_id: "javascript:alert(1)" },
+    0,
+  );
+  assert.equal(card.timestampUrl, null);
 });
 
 test("unicode and long transcript text are preserved verbatim", () => {
@@ -86,9 +100,10 @@ test("multiple results keep distinct keys and ranks", () => {
   assert.deepEqual(cards.map((c) => c.rank), [1, 2]);
 });
 
-test("card model exposes no links or filter state", () => {
+test("card model exposes a validated URL but no raw href or filter state", () => {
   const card = toResultCardModel(base, 0);
   assert.ok(!("href" in card));
   assert.ok(!("filters" in card));
   assert.ok(!("embedding" in card));
+  assert.equal(card.timestampUrl, null); // base has no youtube id
 });

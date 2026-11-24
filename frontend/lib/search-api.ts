@@ -26,6 +26,7 @@ export type SearchResultSnippet = {
   duration_ms?: number;
   model_id?: string;
   timestamp_precision?: string;
+  youtube_video_id?: string;
   distance?: number;
 };
 
@@ -131,6 +132,7 @@ export function parseSearchResponse(payload: unknown): SearchApiResponse {
       "transcript_asset_id",
       "model_id",
       "timestamp_precision",
+      "youtube_video_id",
     ] as const) {
       const value = item[key];
       if (value !== undefined) {

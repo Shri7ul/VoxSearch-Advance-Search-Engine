@@ -9,7 +9,10 @@ Next.js + TypeScript search homepage.
   response protection. Results are rendered as plain text only.
 - Goal 31: accessible, responsive result cards (`lib/result-cards.ts`) showing
   video / transcript identity, chunk index, verbatim text, plain-text timing and
-  relevance. Timestamp links (32) and filters (33) are NOT implemented.
+  relevance.
+- Goal 32: validated YouTube timestamp links (`lib/youtube-link.ts`) from the
+  existing `youtube_video_id` and `start_ms` fields; invalid data yields no link.
+  Filters (33) are NOT implemented.
 
 ## Layout
 
@@ -20,7 +23,7 @@ Next.js + TypeScript search homepage.
 - `lib/search-api.ts` — injectable-fetch search API client (Goal 30).
 - `lib/result-cards.ts` — pure card view-model and timestamp formatter (Goal 31).
 - `tests/search-input.test.ts`, `tests/search-api.test.ts`,
-  `tests/result-cards.test.ts` — Node built-in tests.
+  `tests/result-cards.test.ts`, `tests/youtube-link.test.ts` — Node built-in tests.
 
 Set `NEXT_PUBLIC_API_BASE_URL` to override the default `http://localhost:8000`
 backend base URL. No credentials belong in this variable.

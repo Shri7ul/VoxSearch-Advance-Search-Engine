@@ -149,6 +149,17 @@ button {
   border-top: 1px solid #232d4b;
 }
 
+.result-card__timestamp {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.result-card__timestamp:hover,
+.result-card__timestamp:focus-visible {
+  color: #b8d4ff;
+}
+
 @media (max-width: 640px) {
   .hero {
     padding: 2rem 1.25rem;

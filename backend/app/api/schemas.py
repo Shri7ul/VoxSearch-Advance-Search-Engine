@@ -46,6 +46,9 @@ class SearchHit(BaseModel):
     )
     diagnostics: list[str] = Field(description="Non-sensitive chunking diagnostics")
     model_id: str = Field(description="Embedding model that produced the chunk vector")
+    youtube_video_id: str | None = Field(
+        default=None, description="Verified YouTube video id for timestamp links"
+    )
     distance: float = Field(
         ge=0.0, le=2.0, description="pgvector cosine distance (<=>); 0 means identical"
     )

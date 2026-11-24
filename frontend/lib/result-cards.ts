@@ -6,6 +6,7 @@
  * keys and deterministic formatting keep rendering stable across requests.
  */
 import type { SearchResultSnippet } from "./search-api.ts";
+import { buildYouTubeTimestampUrl } from "./youtube-link.ts";
 
 export type ResultCardModel = {
   id: string;
@@ -15,6 +16,7 @@ export type ResultCardModel = {
   chunkLabel: string | null;
   text: string;
   timing: string;
+  timestampUrl: string | null;
   relevance: string | null;
   modelLabel: string | null;
   precisionLabel: string | null;
@@ -56,6 +58,10 @@ export function toResultCardModel(
       typeof result.chunk_index === "number" ? `Chunk ${result.chunk_index}` : null,
     text: result.text,
     timing: `${formatTimestamp(result.start_ms)} – ${formatTimestamp(result.end_ms)}`,
+    timestampUrl: buildYouTubeTimestampUrl(
+      result.youtube_video_id,
+      result.start_ms,
+    ),
     relevance:
       typeof result.score === "number" && Number.isFinite(result.score)
         ? `Relevance ${result.score.toFixed(3)}`

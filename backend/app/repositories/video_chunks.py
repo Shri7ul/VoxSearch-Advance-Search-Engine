@@ -32,7 +32,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.db.models import VideoChunk
+from app.db.models import Video, VideoChunk
 from app.repositories.base import BaseRepository
 
 # Goal 17 retrieval bounds. The repository owns the data-access bound so that a
@@ -86,6 +86,8 @@ class ChunkSearchResult:
     diagnostics: tuple[str, ...]
     model_id: str
     distance: float
+    # Existing videos.youtube_video_id, surfaced for Goal 32 timestamp links.
+    youtube_video_id: str = ""
 
     @property
     def score(self) -> float:
@@ -124,6 +126,7 @@ class ChunkSearchResult:
             diagnostics=tuple(row.diagnostics),
             model_id=row.model_id,
             distance=float(row.distance),
+            youtube_video_id=getattr(row, "youtube_video_id", "") or "",
         )
 
 
@@ -276,8 +279,9 @@ class VideoChunkRepository(BaseRepository):
             VideoChunk.overlap_sentence_indices,
             VideoChunk.diagnostics,
             VideoChunk.model_id,
+            Video.youtube_video_id.label("youtube_video_id"),
             dist,
-        )
+        ).join(Video, VideoChunk.video_id == Video.id)
         if video_id is not None:
             stmt = stmt.where(VideoChunk.video_id == video_id)
         if transcript_asset_id is not None:

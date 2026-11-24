@@ -51,6 +51,16 @@ def test_search_similar_emits_cosine_operator_and_cast() -> None:
     assert "LIMIT" in sql
 
 
+def test_search_similar_joins_videos_for_youtube_id() -> None:
+    """Goal 32 needs the existing videos.youtube_video_id column."""
+    session = MagicMock()
+    session.execute.return_value.all.return_value = []
+    VideoChunkRepository(session).search_similar(DUMMY_QUERY_VECTOR)
+    _, sql, _ = _compiled(session)
+    assert "JOIN voxsearch.videos" in sql
+    assert "youtube_video_id" in sql
+
+
 def test_search_similar_does_not_select_embedding_column() -> None:
     session = MagicMock()
     session.execute.return_value.all.return_value = []
@@ -169,6 +179,7 @@ class _FakeRow:
     diagnostics: list[str]
     model_id: str
     distance: float
+    youtube_video_id: str = ""
 
 
 def test_search_similar_maps_rows_into_chunk_search_results() -> None:
@@ -195,6 +206,7 @@ def test_search_similar_maps_rows_into_chunk_search_results() -> None:
         diagnostics=["ok"],
         model_id="BAAI/bge-m3",
         distance=0.15,
+        youtube_video_id="dQw4w9WgXcQ",
     )
     session.execute.return_value.all.return_value = [row]
 
@@ -219,6 +231,7 @@ def test_search_similar_maps_rows_into_chunk_search_results() -> None:
     assert res.source_segment_refs == ("seg-1", "seg-2")
     assert res.overlap_sentence_indices == (2,)
     assert res.diagnostics == ("ok",)
+    assert res.youtube_video_id == "dQw4w9WgXcQ"
 
 
 def test_search_similar_empty_result_returns_empty_list() -> None:
