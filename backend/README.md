@@ -21,7 +21,8 @@ FastAPI backend for VoxSearch.
 > ACCEPTED; live DB verification pending), and **PostgreSQL full-text keyword
 > retrieval** (Goal 22, ACCEPTED; offline SQL only), and **dual dense+lexical
 > retrieval** (Goal 23, ACCEPTED), and **RRF combined ranking** (Goal 24,
-> ACCEPTED), and **duplicate removal** (Goal 25, ACCEPTED). ASR,
+> ACCEPTED), **duplicate removal** (Goal 25, ACCEPTED), and **BGE reranker
+> setup** (Goal 26, ACCEPTED; real model load not verified). ASR,
 > reranking, and the search frontend are **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
@@ -1715,7 +1716,65 @@ empty/unusual valid inputs, and no Goal 26+ behavior. No defect was found.
 
 ---
 
+## 23. Goal 26 — BGE reranker setup (Model loads)
+
+> **Status: ACCEPTED** (independent adversarial review complete, offline
+> validation passed). Real model loading is NOT VERIFIED (opt-in live test
+> skipped).
+
+### Review outcome
+
+Independent adversarial review found one genuine defect: `RerankerConfig`
+silently coerced boolean / string values for `timeout_seconds` (e.g. `True` →
+`1.0`), unlike the strict numeric conventions used by Goals 17–19. The field now
+uses `StrictFloat | StrictInt`, with regression cases. All other review areas
+(config immutability, default model and local-path restrictions, closed error
+taxonomy, torch isolation, subprocess safety, timeouts, bounded JSON, credential
+allowlist, no `.env` / `DATABASE_URL` access, lazy worker import, provider
+injection, fail-closed `load_model`, opt-in live test, and absence of Goal 27
+behavior) were verified with no defect.
+
+### Architecture
+
+- `app/reranking/contracts.py` — torch-free setup boundary: validated immutable
+  `RerankerConfig` (default `BAAI/bge-reranker-v2-m3`, local model path only),
+  closed error taxonomy, `RerankerStatus` and `RerankerSetup.load_model()`.
+- `reranker_worker/worker.py` — isolated process entry point with a LAZY
+  `FlagEmbedding.FlagReranker` import, bounded JSON stdin/stdout, verbatim
+  request validation and closed credential-free error reasons. It performs NO
+  scoring or reordering.
+- `reranker_worker/client.py` — stdlib subprocess launcher: `shell=False`,
+  `stderr=DEVNULL`, hard timeout, bounded request/response, and a minimal
+  allowlisted environment that never forwards `DATABASE_URL` or other secrets.
+- Interpreter selection is `VOXSEARCH_RERANKER_PYTHON` or explicit injection only;
+  no `.env` access, no model download, no new dependency and no model load in
+  the core API process. Reuses Goal 14's already-isolated `.venv-embedding`.
+- `tests/test_reranker_setup.py` — 27 focused tests (including the fail-closed
+  invariant on `loaded=False` / empty model id and strict timeout validation);
+  `tests/test_reranker_setup_live.py`
+  — opt-in `live_reranker` smoke test (skipped by default).
+
+### Explicitly out of scope (NOT implemented)
+
+- Goal 27 (candidate scoring / reordering), Goal 28, reranking metrics, HTTP
+  endpoint, migration, new dependency and any production write.
+
+---
+
 ## Validation performed
+
+### Goal 26 — BGE reranker setup
+
+- Focused tests (`tests/test_reranker_setup.py`): **27 passed** — config
+  validation (including strict timeout), injected provider, fail-closed loaded-status invariant,
+  interpreter selection precedence, isolated subprocess argv/env/timeout,
+  closed error mapping, and worker-side no-traceback failure output. Opt-in
+  live test: **1 skipped**.
+- Full backend suite: **1248 passed, 5 skipped, 1 warning**; `py_compile` clean;
+  `git diff --check` clean.
+- Not verified: real BGE reranker weights loading (no configured
+  `VOXSEARCH_RERANKER_PYTHON`, no opt-in flag), live PostgreSQL/pgvector, and
+  any reranking quality metric.
 
 ### Goal 25 — Duplicate removal
 
