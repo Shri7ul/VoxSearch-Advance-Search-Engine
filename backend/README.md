@@ -21,7 +21,7 @@ FastAPI backend for VoxSearch.
 > ACCEPTED; live DB verification pending), and **PostgreSQL full-text keyword
 > retrieval** (Goal 22, ACCEPTED; offline SQL only), and **dual dense+lexical
 > retrieval** (Goal 23, ACCEPTED), and **RRF combined ranking** (Goal 24,
-> ACCEPTED). ASR,
+> ACCEPTED), and **duplicate removal** (Goal 25, ACCEPTED). ASR,
 > reranking, and the search frontend are **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
@@ -1680,13 +1680,53 @@ incorrectly described `k = 0` as non-positive even though zero is valid.
   integer (`bool` rejected).
 - `FusedCandidate` is immutable and carries the native Goal 17/22 result object;
   neither contains an embedding, so no raw vector is exposed.
-- **Goal 25 is not implemented**: duplicate chunk ids remain as separate adjacent
-  entries. No re-ranking model, endpoint, migration or new dependency is added.
+- Goal 25 deduplication (see §22) is not implemented here: duplicate chunk ids
+  remain as separate adjacent entries. No re-ranking model, endpoint, migration
+  or new dependency is added.
 - `tests/test_rrf.py` — 15 focused tests.
 
 ---
 
+## 22. Goal 25 — Duplicate removal (Clean result list)
+
+> **Status: ACCEPTED** (independent adversarial review complete, offline
+> validation passed). Live PostgreSQL / real-model inference NOT VERIFIED.
+
+### Review outcome
+
+The adversarial review verified UUID-only identity, cross-source duplicate
+removal, highest-RRF representative selection with deterministic ties,
+deterministic output order and preserved relative order of unique candidates,
+input non-mutation, reuse of original immutable `FusedCandidate` objects,
+unchanged RRF scores and provenance, no embedding or sensitive-field exposure,
+empty/unusual valid inputs, and no Goal 26+ behavior. No defect was found.
+
+### Scope and architecture
+
+- `app/services/deduplication.py` — `DeduplicationService.deduplicate` removes
+  duplicate chunk ids from Goal 24's fused list by stable UUID identity.
+- The kept representative is the highest-RRF candidate; deterministic ties use
+  the Goal 24 order (dense before lexical, then source rank, then chunk id).
+  Relative order of kept representatives is preserved, and the original
+  immutable `FusedCandidate` objects are returned unchanged with their
+  dense/lexical provenance and native score semantics.
+- No reranking, score rewriting, endpoint, migration, dependency or write is
+  added. `tests/test_deduplication.py` — 9 focused tests.
+
+---
+
 ## Validation performed
+
+### Goal 25 — Duplicate removal
+
+- Focused tests (`tests/test_deduplication.py`): **9 passed** — cross-source and
+  same-source duplicate removal, best-representative selection, stable order,
+  deterministic ties, empty input, no input mutation, object reuse, no
+  embedding exposure and no reranking fields.
+- Full backend suite: **1221 passed, 4 skipped, 1 warning**; `py_compile` clean;
+  `git diff --check` clean.
+- Not verified: live PostgreSQL FTS / pgvector retrieval and real BGE-M3
+  inference.
 
 ### Goal 24 — RRF combined ranking
 
