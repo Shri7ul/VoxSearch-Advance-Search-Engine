@@ -2389,3 +2389,23 @@ persistence count must exactly match the embedded chunk count. Focused tests:
   aligned-sentence objects. Failures and under-persisted outputs fail closed.
 - No new route, dependency, migration, DB write or Goal 43 work.
 - `tests/test_indexing_automation.py` — 12 tests with injected boundaries.
+
+---
+
+## 35. Goals 43–44 — Evaluation dataset and retrieval metrics
+
+> **Status: both ACCEPTED** (adversarial audits complete, deterministic tests
+> passed). Live search/database/model verification NOT VERIFIED.
+
+Audit fixes: dataset records now fail closed on non-string ids/text/qrels, and
+duplicate retrieved ids no longer inflate Recall@10 or nDCG. Combined focused
+tests: 35 passed; full backend suite: 1634 passed, 5 skipped, 1 warning.
+
+- `app/evaluation/dataset.py` — immutable labeled-query contracts and a
+  deterministic 200-query synthetic fixture (40 per closed category) with
+  graded qrels. It is NOT a human-annotated dataset.
+- `app/evaluation/retrieval.py` — bounded Recall@k, MRR and graded nDCG with
+  an injected retriever, per-query metrics and overall/per-category summaries.
+- No network, DB, model or live search call; no Goal 45/46 work.
+- `tests/test_evaluation_dataset.py` and `tests/test_retrieval_evaluation.py`
+  cover validation, boundaries and Goal 43→44 integration.
