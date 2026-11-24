@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     oauth_client_secret: SecretStr | None = None
     oauth_redirect_uri: str | None = None
 
+    # Goal 39: Redis queue setup. Password is SecretStr; no connection is
+    # opened at import time and no `.env` file is read directly.
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_password: SecretStr | None = None
+    redis_queue_key: str = "voxsearch:jobs"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

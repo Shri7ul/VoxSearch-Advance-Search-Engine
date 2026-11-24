@@ -2310,3 +2310,23 @@ existing validated `TranscriptInput` with internal video/rights UUIDs.
 - No duplicate normalization/segmentation/chunking, no ingestion call, no DB
 write, migration, new dependency, Phase 10 queue or token leakage.
 - `tests/test_youtube_transcript_adapter.py` — 28 tests with a mocked transport.
+
+---
+
+## 31. Goal 39 — Redis setup (Queue operational)
+
+> **Status: ACCEPTED** (adversarial audit complete, mocked-client validation
+> passed). Live Redis connectivity NOT VERIFIED.
+
+Audit fixes: dequeue waits beyond the socket timeout are rejected, and declared
+RESP bulk lengths are bounded. Focused tests: 45 passed; full backend suite:
+1542 passed, 5 skipped, 1 warning.
+
+- `app/queue/redis.py` — validated `RedisConfig` (SecretStr password, bounded
+  host/port/db/key/timeouts) and `RedisQueue` primitives: PING health, bounded
+  JSON `LPUSH`, `BRPOP` (1–60 second bound), and `LLEN` size.
+- Dependency-free stdlib RESP2 client with AUTH/SELECT and nested reply
+  parsing; every command path is injectable for deterministic tests.
+- No import-time connection, requirements/lockfile change, Celery (40),
+  retries (41), indexing automation (42), DB write or migration.
+- `tests/test_redis_queue.py` — 45 tests with an injected client.
