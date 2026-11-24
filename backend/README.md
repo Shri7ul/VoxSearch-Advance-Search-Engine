@@ -22,7 +22,8 @@ FastAPI backend for VoxSearch.
 > retrieval** (Goal 22, ACCEPTED; offline SQL only), and **dual dense+lexical
 > retrieval** (Goal 23, ACCEPTED), and **RRF combined ranking** (Goal 24,
 > ACCEPTED), **duplicate removal** (Goal 25, ACCEPTED), and **BGE reranker
-> setup** (Goal 26, ACCEPTED; real model load not verified). ASR,
+> setup** (Goal 26, ACCEPTED; real model load not verified), and **candidate
+> reranking** (Goal 27, ACCEPTED; real inference not verified). ASR,
 > reranking, and the search frontend are **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
@@ -1756,12 +1757,65 @@ behavior) were verified with no defect.
 
 ### Explicitly out of scope (NOT implemented)
 
-- Goal 27 (candidate scoring / reordering), Goal 28, reranking metrics, HTTP
-  endpoint, migration, new dependency and any production write.
+- Goal 27 (candidate scoring / reordering, tracked in §24), Goal 28, reranking
+  metrics, HTTP endpoint, migration, new dependency and any production write.
+
+---
+
+## 24. Goal 27 — Candidate reranking (Reordered results)
+
+> **Status: ACCEPTED** (independent adversarial review complete, offline
+> validation passed). Actual BGE reranking inference NOT VERIFIED (no isolated
+> model weights configured).
+
+### Review outcome
+
+Independent adversarial review verified all 19 review requirements: candidate
+identity and metadata preservation, verbatim query/text pairs, index-correct
+score mapping, finite/count validation with malformed-output rejection,
+score-descending order with input-position tie-breaks, immutable input/output,
+candidate/text bounds, empty-input short-circuit, isolated subprocess execution,
+timeout/worker failure handling, no silent fallback, no embedding/credential
+leakage, and no Goal 28 or endpoint scope. No defect was found.
+
+### Scope and architecture
+
+- `app/reranking/scoring.py` — `CandidateRerankingService.rerank` consumes the
+  deduplicated `FusedCandidate` list (Goal 25), scores `(query, chunk_text)`
+  pairs through the isolated Goal 26 worker, and returns immutable
+  `RerankedCandidate` objects that hold the ORIGINAL candidate plus a finite BGE
+  score and a 1-based rank. Ordering is score-descending; the original input
+  position is the deterministic tie-break.
+- Bounds: 50 candidates, 8192 characters per query/text. Empty candidates return
+  `[]` without invoking the worker. Malformed score output, scorer failures and
+  an unavailable worker propagate unchanged — there is NO fallback ranking.
+- `reranker_worker` gained a bounded, validated scoring protocol with closed
+  credential-free reasons (`invalid_request`, `model_load_error`,
+  `scoring_error`, `invalid_output`); the worker never prints tracebacks or
+  paths, and inference remains in the isolated subprocess.
+- `tests/test_candidate_reranking.py` (18) +
+  `tests/test_reranker_scoring_worker.py` (17).
+
+### Explicitly out of scope (NOT implemented)
+
+- Goal 28 surrounding-context matching, reranking quality metrics, HTTP
+  endpoint, new dependency, migration and any production write.
 
 ---
 
 ## Validation performed
+
+### Goal 27 — Candidate reranking
+
+- Focused tests: **35 passed** (18 service + 17 worker/client) — score-based
+  reordering, rank assignment, original-object/metadata preservation,
+  deterministic ties, verbatim query/text pairs, empty input without scoring,
+  query/candidate bounds, score validation, failure propagation without
+  fallback, no embedding exposure, and closed worker error reasons.
+- Goal 26: **27 passed, 1 skipped**; full backend suite: **1283 passed,
+  5 skipped, 1 warning**; `py_compile` clean; `git diff --check` clean.
+- Not verified: actual BGE reranking inference and reranking quality metrics
+  (no configured isolated interpreter/model weights); live PostgreSQL/pgvector.
 
 ### Goal 26 — BGE reranker setup
 

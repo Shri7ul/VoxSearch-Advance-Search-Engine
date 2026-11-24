@@ -10,8 +10,10 @@ messages.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
+from collections.abc import Sequence
 from typing import Any
 
 from app.reranking.contracts import (
@@ -21,8 +23,8 @@ from app.reranking.contracts import (
     RerankerStatus,
 )
 
-MAX_REQUEST_BYTES = 1_000_000
-MAX_RESPONSE_BYTES = 1_000_000
+MAX_REQUEST_BYTES = 4_000_000
+MAX_RESPONSE_BYTES = 4_000_000
 
 _ENV_ALLOWLIST = (
     "PATH",
@@ -122,6 +124,68 @@ class SubprocessRerankerProvider:
         if raw.get("loaded") is not True or not isinstance(raw.get("model_id"), str):
             raise RerankerModelLoadError("reranker worker reported no loaded model")
         return RerankerStatus(model_id=raw["model_id"], loaded=True)
+
+    def score(
+        self, pairs: Sequence[Sequence[str]], config: RerankerConfig
+    ) -> list[float]:
+        """Score ``[query, text]`` pairs in the isolated process (Goal 27)."""
+        payload: dict[str, Any] = {
+            "model_id": config.model_id,
+            "model_path": config.model_path,
+            "pairs": [list(pair) for pair in pairs],
+        }
+        try:
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise RerankerError("reranker scoring request is not JSON-serializable") from exc
+        if len(data) > MAX_REQUEST_BYTES:
+            raise RerankerError("reranker scoring request is too large")
+
+        argv = [self._worker_python, "-m", "reranker_worker.worker"]
+        try:
+            completed = subprocess.run(
+                argv,
+                input=data,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=self._timeout,
+                env=_controlled_env(),
+                cwd=_BACKEND_DIR,
+                shell=False,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RerankerModelLoadError("reranker scoring worker timed out") from exc
+        except OSError as exc:
+            raise RerankerModelLoadError("reranker scoring worker could not be launched") from exc
+        if completed.returncode != 0:
+            raise RerankerModelLoadError("reranker scoring worker exited with an error")
+        stdout = completed.stdout or b""
+        if len(stdout) > MAX_RESPONSE_BYTES:
+            raise RerankerModelLoadError("reranker scoring output is too large")
+        try:
+            raw = json.loads(stdout.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise RerankerModelLoadError("reranker scoring returned invalid JSON") from exc
+        if not isinstance(raw, dict):
+            raise RerankerModelLoadError("reranker scoring returned a non-object")
+        reason = raw.get("provider_error")
+        if reason == "invalid_request":
+            raise RerankerError("reranker worker rejected the scoring request")
+        if reason:
+            raise RerankerModelLoadError(f"reranker scoring failed ({reason})")
+        scores = raw.get("scores")
+        if not isinstance(scores, list) or len(scores) != len(pairs):
+            raise RerankerModelLoadError("reranker returned an invalid score list")
+        cleaned: list[float] = []
+        for value in scores:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise RerankerModelLoadError("reranker returned a non-numeric score")
+            number = float(value)
+            if not math.isfinite(number):
+                raise RerankerModelLoadError("reranker returned a non-finite score")
+            cleaned.append(number)
+        return cleaned
 
 
 __all__ = ["SubprocessRerankerProvider"]

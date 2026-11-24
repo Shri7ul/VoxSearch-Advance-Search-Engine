@@ -4,6 +4,15 @@ Only the torch-free contract layer is importable from the core backend. The real
 model is loaded exclusively in the isolated ``reranker_worker`` subprocess.
 Candidate scoring / reordering (Goal 27) is NOT implemented here.
 """
+from app.reranking.scoring import (
+    MAX_CANDIDATES,
+    MAX_QUERY_CHARACTERS,
+    CandidateRerankingService,
+    InvalidRerankInputError,
+    RerankScorer,
+    RerankedCandidate,
+    RerankingError,
+)
 from app.reranking.contracts import (
     DEFAULT_RERANKER_MODEL_ID,
     DEFAULT_TIMEOUT_SECONDS,
@@ -19,6 +28,13 @@ from app.reranking.contracts import (
 )
 
 __all__ = [
+    "MAX_CANDIDATES",
+    "MAX_QUERY_CHARACTERS",
+    "CandidateRerankingService",
+    "InvalidRerankInputError",
+    "RerankScorer",
+    "RerankedCandidate",
+    "RerankingError",
     "DEFAULT_RERANKER_MODEL_ID",
     "DEFAULT_TIMEOUT_SECONDS",
     "RERANKER_PYTHON_ENV",
