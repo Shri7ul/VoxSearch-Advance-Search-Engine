@@ -2330,3 +2330,23 @@ RESP bulk lengths are bounded. Focused tests: 45 passed; full backend suite:
 - No import-time connection, requirements/lockfile change, Celery (40),
   retries (41), indexing automation (42), DB write or migration.
 - `tests/test_redis_queue.py` — 45 tests with an injected client.
+
+---
+
+## 32. Goal 40 — Celery worker (Background job)
+
+> **Status: ACCEPTED** (adversarial audit complete, fake-module tests passed).
+> Live Redis/Celery execution NOT VERIFIED.
+
+Audit fixes: default dispatcher now has a no-op `ping` health job, and
+`submit_job()` bridges validated jobs through Celery's own `send_task` envelope.
+Focused tests: 25 passed; full backend suite: 1567 passed, 5 skipped, 1 warning.
+
+- `app/workers/` — lazy Celery app factory, validated `CeleryConfig` /
+  `JobEnvelope`, fail-closed `TaskRegistry` and `JobDispatcher`.
+- Celery is declared only in optional `requirements-worker.txt`; core
+  requirements/lockfile unchanged, no import-time Celery import or broker
+  connection, no Redis/Celery service started.
+- No retry policy (41), indexing automation (42), DB write or migration.
+- Secrets remain SecretStr-masked in repr and errors.
+- `tests/test_celery_worker.py` — 25 tests with a fake Celery module.

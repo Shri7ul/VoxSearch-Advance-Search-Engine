@@ -1,0 +1,11 @@
+# VoxSearch Goal 40 — OPTIONAL isolated Celery worker environment
+# =============================================================================
+# Keep Celery OUT of the core backend requirements/lockfile. The core app and
+# its tests must import cleanly without Celery installed.
+#
+# INSTALL (only when deliberately provisioning a worker host):
+#   python -m pip install -r backend/requirements-worker.txt
+#
+# No installation was performed as part of Goal 40; tests inject a fake Celery
+# module and never start a real worker or connect to Redis.
+celery==5.5.3
