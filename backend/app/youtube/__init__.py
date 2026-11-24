@@ -4,6 +4,11 @@ No video discovery, metadata retrieval, channel registry or OAuth flow is
 implemented here; those are Goals 35–37. Real keys come only from environment /
 the git-ignored local `.env` and are held as ``SecretStr``.
 """
+from app.youtube.channel_registry import (
+    ChannelRegistryService,
+    InvalidChannelRegistryInputError,
+    RegisteredChannel,
+)
 from app.youtube.discovery import (
     InvalidVideoDiscoveryInputError,
     VideoDiscoveryService,
@@ -31,6 +36,9 @@ from app.youtube.client import (
 )
 
 __all__ = [
+    "ChannelRegistryService",
+    "InvalidChannelRegistryInputError",
+    "RegisteredChannel",
     "InvalidVideoDiscoveryInputError",
     "VideoDiscoveryService",
     "VideoMetadata",

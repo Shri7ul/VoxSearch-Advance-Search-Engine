@@ -2248,3 +2248,24 @@ overwritten. Focused tests: 48 passed; full backend suite: 1415 passed,
 - No DB writes, migration, new dependency, source credentials, channel registry,
   OAuth flow or transcript ingestion (Goals 36–38).
 - `tests/test_youtube_video_discovery.py` — 48 tests with a mocked transport.
+
+---
+
+## 28. Goal 36 — Channel registry (Channel records)
+
+> **Status: ACCEPTED** (adversarial audit complete, mocked-service validation
+> passed). Live YouTube and database verification NOT VERIFIED.
+
+Audit fix: existing-channel records now use the persisted row returned by
+`ChannelService` instead of the requested metadata, with mismatch rejection.
+Focused tests: 17 passed; full backend suite: 1432 passed, 5 skipped, 1 warning.
+
+- `app/youtube/channel_registry.py` — `ChannelRegistryService.register_from_videos`
+  validates external channel id / title / description from Goal 35 metadata,
+  deduplicates by `youtube_channel_id` in first-seen order, and reuses the
+  accepted Goal 08 `ChannelService.create_or_get_channel` once per unique
+  channel. Immutable `RegisteredChannel` records carry the internal UUID.
+- Fail-closed on invalid input, service failure or an invalid returned record.
+  No migration, executed DB write, new dependency, OAuth (37), transcript
+  ingestion (38) or search-pipeline change.
+- `tests/test_channel_registry.py` — 17 tests with a mocked channel service.
