@@ -2269,3 +2269,25 @@ Focused tests: 17 passed; full backend suite: 1432 passed, 5 skipped, 1 warning.
   No migration, executed DB write, new dependency, OAuth (37), transcript
   ingestion (38) or search-pipeline change.
 - `tests/test_channel_registry.py` — 17 tests with a mocked channel service.
+
+---
+
+## 29. Goal 37 — Creator authorization (OAuth workflow)
+
+> **Status: ACCEPTED** (adversarial audit complete, mocked-transport validation
+> passed). Real Google OAuth verification NOT VERIFIED.
+
+Audit fix: CSRF state is now consumed on every callback attempt, including
+invalid codes and denials, before any token exchange. Focused tests: 37 passed;
+full backend suite: 1469 passed, 5 skipped, 1 warning.
+
+- `app/youtube/oauth.py` — validated `OAuthConfig` (SecretStr client secret,
+  fixed HTTPS/local redirect URI), bounded TTL single-use `OAuthStateStore`,
+  official HTTPS authorization/token endpoints, and `OAuthWorkflow` for
+  authorization URL generation and code exchange.
+- CSRF state is consumed before exchange (also on denial); tokens are
+  SecretStr-masked and validated for expiry, Bearer type and youtube.readonly
+  scope. No secret/token appears in errors, logs or repr.
+- No HTTP routes, token persistence, Goal 38 transcript ingestion, DB writes,
+  migrations, new dependencies or import-time network.
+- `tests/test_youtube_oauth.py` — 37 tests with a mocked transport.

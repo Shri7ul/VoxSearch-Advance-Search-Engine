@@ -4,6 +4,22 @@ No video discovery, metadata retrieval, channel registry or OAuth flow is
 implemented here; those are Goals 35–37. Real keys come only from environment /
 the git-ignored local `.env` and are held as ``SecretStr``.
 """
+from app.youtube.oauth import (
+    GOOGLE_AUTHORIZE_URL,
+    GOOGLE_TOKEN_URL,
+    YOUTUBE_READONLY_SCOPE,
+    OAuthAuthorizationError,
+    OAuthConfig,
+    OAuthConfigError,
+    OAuthError,
+    OAuthStateError,
+    OAuthStateStore,
+    OAuthTokenError,
+    OAuthTokens,
+    OAuthTransport,
+    OAuthTransportError,
+    OAuthWorkflow,
+)
 from app.youtube.channel_registry import (
     ChannelRegistryService,
     InvalidChannelRegistryInputError,
@@ -36,6 +52,20 @@ from app.youtube.client import (
 )
 
 __all__ = [
+    "GOOGLE_AUTHORIZE_URL",
+    "GOOGLE_TOKEN_URL",
+    "YOUTUBE_READONLY_SCOPE",
+    "OAuthAuthorizationError",
+    "OAuthConfig",
+    "OAuthConfigError",
+    "OAuthError",
+    "OAuthStateError",
+    "OAuthStateStore",
+    "OAuthTokenError",
+    "OAuthTokens",
+    "OAuthTransport",
+    "OAuthTransportError",
+    "OAuthWorkflow",
     "ChannelRegistryService",
     "InvalidChannelRegistryInputError",
     "RegisteredChannel",

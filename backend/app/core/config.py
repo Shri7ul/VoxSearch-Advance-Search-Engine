@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     youtube_api_key: SecretStr | None = None
     youtube_api_base_url: str = "https://www.googleapis.com/youtube/v3"
 
+    # Goal 37: creator authorization (OAuth web-server flow). Secrets use
+    # SecretStr so repr/str never reveal them. The redirect URI is fixed by
+    # configuration; arbitrary callback destinations are never accepted.
+    oauth_client_id: str | None = None
+    oauth_client_secret: SecretStr | None = None
+    oauth_redirect_uri: str | None = None
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
