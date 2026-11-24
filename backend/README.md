@@ -20,7 +20,8 @@ FastAPI backend for VoxSearch.
 > verification pending), and the **structured JSON response schema** (Goal 21,
 > ACCEPTED; live DB verification pending), and **PostgreSQL full-text keyword
 > retrieval** (Goal 22, ACCEPTED; offline SQL only), and **dual dense+lexical
-> retrieval** (Goal 23, ACCEPTED). ASR,
+> retrieval** (Goal 23, ACCEPTED), and **RRF combined ranking** (Goal 24,
+> ACCEPTED). ASR,
 > reranking, and the search frontend are **not** implemented.
 > Goal 14 (**ACCEPTED**) prepared and validated an **isolated, CPU-only
 > BGE-M3 environment** (installation / smoke-test validation ONLY) in
@@ -1647,14 +1648,56 @@ verified with no defect.
   `dense` (Goal 17 `ChunkSearchResult`, cosine distance / score) and `lexical`
   (Goal 22 `LexicalSearchResult`, PostgreSQL `ts_rank`). Native ordering and
   score semantics are preserved separately.
-- No RRF (Goal 24), deduplication (Goal 25), re-ranking, HTTP endpoint,
-  migration, index, new dependency or write is added. Failures from either path
-  propagate unchanged.
+- RRF (Goal 24, see §21) and deduplication (Goal 25) are not implemented here;
+  neither are re-ranking, an HTTP endpoint, migration, index, new dependency or
+  write. Failures from either path propagate unchanged.
 - `tests/test_hybrid_retrieval.py` — 8 focused tests.
 
 ---
 
+## 21. Goal 24 — RRF implementation (Combined ranking)
+
+> **Status: ACCEPTED** (independent adversarial review complete, offline
+> validation passed). Live PostgreSQL / real-model inference NOT VERIFIED.
+
+### Review outcome
+
+The adversarial review verified the RRF formula, 1-based ranks, standard
+`k = 60`, UUID-based cross-list identity and score summation, deterministic
+ordering and tie-breaks, `k` validation boundaries, immutability, no embedding
+exposure, and preservation of duplicates for Goal 25. No behavioral defect was
+found. One documentation defect was corrected: `RRFFusionError`'s docstring
+incorrectly described `k = 0` as non-positive even though zero is valid.
+
+### Scope and architecture
+
+- `app/services/rrf.py` — `RRFFusionService.fuse` combines Goal 23's dense and
+  lexical result lists into one ranking with Reciprocal Rank Fusion. Each
+  1-based source rank contributes `1 / (k + rank)`, `DEFAULT_RRF_K = 60`, and a
+  document appearing in both lists receives the sum of its contributions.
+- Ordering is deterministic: RRF score descending, then source (`dense` before
+  `lexical`), then source rank, then chunk id. `k` must be a non-negative
+  integer (`bool` rejected).
+- `FusedCandidate` is immutable and carries the native Goal 17/22 result object;
+  neither contains an embedding, so no raw vector is exposed.
+- **Goal 25 is not implemented**: duplicate chunk ids remain as separate adjacent
+  entries. No re-ranking model, endpoint, migration or new dependency is added.
+- `tests/test_rrf.py` — 15 focused tests.
+
+---
+
 ## Validation performed
+
+### Goal 24 — RRF combined ranking
+
+- Focused tests (`tests/test_rrf.py`): **15 passed** — standard `1/(k+rank)`
+  math, summed scores for documents in both lists, custom `k`, invalid `k`,
+  descending fused order, deterministic tie-breaking, duplicate preservation
+  (Goal 25 boundary), empty inputs, no embedding field, and immutability.
+- Full backend suite: **1212 passed, 4 skipped, 1 warning**; `py_compile` clean;
+  `git diff --check` clean.
+- Not verified: live PostgreSQL FTS / pgvector retrieval and real BGE-M3
+  inference; RRF quality metrics (no relevance judgments available).
 
 ### Goal 23 — Dense + lexical retrieval
 
