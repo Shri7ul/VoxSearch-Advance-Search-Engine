@@ -1,11 +1,13 @@
 # VoxSearch Frontend — Goal 29 search homepage
 
-Next.js + TypeScript search homepage. This goal is the **search UI only**:
+Next.js + TypeScript search homepage.
 
-- query text box with deterministic validation (`lib/search-input.ts`);
-- submit button and local status message;
-- no API call, no result cards, no timestamp links, no filters — those are
-  Goals 30–33.
+- Goal 29: query text box with deterministic validation (`lib/search-input.ts`)
+  and accessible local status.
+- Goal 30: `lib/search-api.ts` integrates with `POST /api/v1/search` — loading,
+  success, API/network error states, duplicate-request suppression and stale
+  response protection. Results are rendered as plain text only.
+- Goals 31–33 (result cards, timestamp links, filters) are NOT implemented.
 
 ## Layout
 
@@ -13,7 +15,11 @@ Next.js + TypeScript search homepage. This goal is the **search UI only**:
 - `app/page.tsx` — the homepage client component.
 - `app/globals.css` — minimal dark theme.
 - `lib/search-input.ts` — pure validation, no React and no network.
-- `tests/search-input.test.ts` — Node's built-in test runner tests.
+- `lib/search-api.ts` — injectable-fetch search API client (Goal 30).
+- `tests/search-input.test.ts`, `tests/search-api.test.ts` — Node built-in tests.
+
+Set `NEXT_PUBLIC_API_BASE_URL` to override the default `http://localhost:8000`
+backend base URL. No credentials belong in this variable.
 
 ## Commands (from `frontend/`)
 
@@ -23,6 +29,6 @@ npm test        # node --test tests/*.test.ts (no dependencies required)
 npm run dev     # Next.js dev server after install
 ```
 
-Goal 29 was validated with `npm test` (Node 24 native TypeScript support).
-No packages were installed as part of this goal; real browser rendering and
-`next build` remain unverified in this environment.
+Goals 29–30 were validated with `npm test` (Node 24 native TypeScript support,
+mocked fetch boundary). No packages were installed; real browser rendering,
+`next build`, and live API calls remain unverified in this environment.

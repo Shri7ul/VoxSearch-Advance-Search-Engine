@@ -4,3 +4,8 @@ out/
 *.tsbuildinfo
 .env
 .env.local
+
+# The repository root ignores `lib/` (Python venv artifacts). The frontend's
+# TypeScript library is source code, so re-include it explicitly.
+!lib/
+!lib/*.ts

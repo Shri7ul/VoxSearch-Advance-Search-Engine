@@ -79,6 +79,34 @@ button {
   color: var(--accent);
 }
 
+.status.error {
+  color: #ff9b9b;
+}
+
+.status.success {
+  color: #8ce0b0;
+}
+
+.results {
+  margin: 1.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+.results li {
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+  background: #0f162b;
+  border: 1px solid #2a3454;
+  border-radius: 0.5rem;
+}
+
+button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
 .note {
   margin-top: 2rem;
   color: var(--muted);

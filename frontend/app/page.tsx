@@ -1,29 +1,78 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   MAX_QUERY_CHARACTERS,
-  formatAcceptedMessage,
   validateQuery,
 } from "@/lib/search-input";
+import {
+  SearchApiClient,
+  createRequestTracker,
+  type SearchResultSnippet,
+} from "@/lib/search-api";
 
 /**
- * Goal 29 — the search homepage UI only.
+ * Goal 29 search homepage + Goal 30 API integration.
  *
- * Submitting validates the query and shows local UI state. There is deliberately
- * NO fetch / API call: live results are Goal 30, result cards are Goal 31 and
- * timestamp links are Goal 32.
+ * Submitting validates locally, then POSTs the verbatim query to the existing
+ * backend endpoint. Result cards (Goal 31), timestamp links (Goal 32) and
+ * filters (Goal 33) are intentionally NOT implemented here.
  */
 export default function HomePage() {
   const [query, setQuery] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
+  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">(
+    "idle",
+  );
+  const [message, setMessage] = useState("");
+  const [results, setResults] = useState<SearchResultSnippet[]>([]);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL;
+  const client = useMemo(() => new SearchApiClient(undefined, baseUrl), [baseUrl]);
+  const tracker = useMemo(() => createRequestTracker(), []);
+  const inFlight = useRef(false);
+
+  // Abort in-flight work on unmount so a late response cannot touch dead state.
+  useEffect(() => () => tracker.abortAll(), [tracker]);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const validation = validateQuery(query);
-    setMessage(
-      validation.ok ? formatAcceptedMessage(validation.value) : validation.error,
-    );
+    if (!validation.ok) {
+      tracker.abortAll();
+      inFlight.current = false;
+      setStatus("error");
+      setMessage(validation.error);
+      setResults([]);
+      return;
+    }
+    // Ignore a second submit while a request is already in flight.
+    if (inFlight.current) return;
+
+    const { id, controller } = tracker.next();
+    inFlight.current = true;
+    setStatus("loading");
+    setMessage("Searching…");
+    setResults([]);
+
+    try {
+      const response = await client.search(validation.value, controller.signal);
+      if (!tracker.isCurrent(id)) return; // stale response
+      setResults(response.results);
+      setStatus("success");
+      setMessage(
+        response.count === 0
+          ? "No matching transcript chunks."
+          : `${response.count} matching transcript chunk${response.count === 1 ? "" : "s"}.`,
+      );
+    } catch (error) {
+      if (!tracker.isCurrent(id)) return; // stale failure
+      if (error instanceof Error && error.name === "AbortError") return;
+      setStatus("error");
+      setMessage(error instanceof Error ? error.message : "Search failed.");
+      setResults([]);
+    } finally {
+      if (tracker.isCurrent(id)) inFlight.current = false;
+    }
   }
 
   return (
@@ -46,17 +95,33 @@ export default function HomePage() {
             maxLength={MAX_QUERY_CHARACTERS}
             placeholder="Describe what you remember from a video…"
             autoComplete="off"
+            aria-busy={status === "loading"}
             onChange={(event) => setQuery(event.target.value)}
           />
-          <button type="submit">Search transcripts</button>
+          <button type="submit" disabled={status === "loading"}>
+            {status === "loading" ? "Searching…" : "Search transcripts"}
+          </button>
         </form>
 
-        <p className="status" role="status" aria-live="polite">
-          {message ?? ""}
+        <p
+          className={`status ${status}`}
+          role="status"
+          aria-live="polite"
+          data-status={status}
+        >
+          {message}
         </p>
 
+        {status === "success" && results.length > 0 && (
+          <ul className="results" aria-label="Search results">
+            {results.map((result) => (
+              <li key={result.id}>{result.text}</li>
+            ))}
+          </ul>
+        )}
+
         <p className="note">
-          This homepage is the Goal 29 search UI. API integration, result cards,
+          This homepage validates locally and calls the search API. Result cards,
           timestamp links and filters are tracked in later goals.
         </p>
       </section>
