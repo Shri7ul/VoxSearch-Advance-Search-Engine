@@ -62,6 +62,8 @@ class VectorRetrievalService:
         video_id: uuid.UUID | None = None,
         transcript_asset_id: uuid.UUID | None = None,
         model_id: str | None = None,
+        language: str | None = None,
+        max_duration_seconds: int | None = None,
     ) -> list[ChunkSearchResult]:
         """Return at most ``top_k`` ranked chunks (10 by default).
 
@@ -87,6 +89,8 @@ class VectorRetrievalService:
             video_id=video_id,
             transcript_asset_id=transcript_asset_id,
             model_id=model_id,
+            language=language,
+            max_duration_seconds=max_duration_seconds,
         )
 
 

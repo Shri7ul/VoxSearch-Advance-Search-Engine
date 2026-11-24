@@ -61,6 +61,23 @@ def test_search_similar_joins_videos_for_youtube_id() -> None:
     assert "youtube_video_id" in sql
 
 
+def test_search_similar_applies_language_and_duration_filters() -> None:
+    """Goal 33 filters use existing transcript_assets/videos columns."""
+    session = MagicMock()
+    session.execute.return_value.all.return_value = []
+    VideoChunkRepository(session).search_similar(
+        DUMMY_QUERY_VECTOR,
+        language="bn",
+        max_duration_seconds=900,
+    )
+    _, sql, compiled = _compiled(session)
+    assert "JOIN voxsearch.transcript_assets" in sql
+    assert "transcript_assets.language" in sql
+    assert "videos.duration_seconds <=" in sql
+    assert "bn" in compiled.params.values()
+    assert 900 in compiled.params.values()
+
+
 def test_search_similar_does_not_select_embedding_column() -> None:
     session = MagicMock()
     session.execute.return_value.all.return_value = []

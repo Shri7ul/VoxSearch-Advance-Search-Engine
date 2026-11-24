@@ -79,6 +79,55 @@ button {
   color: var(--accent);
 }
 
+.filters {
+  margin: 1.25rem 0 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid #2a3454;
+  border-radius: 0.6rem;
+  text-align: left;
+}
+
+.filters legend {
+  padding: 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.filters__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+.filters__row label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.filters__row select {
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.4rem;
+  border: 1px solid #39456e;
+  background: #0f162b;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.filters__reset {
+  padding: 0.45rem 0.7rem;
+  background: transparent;
+  border: 1px solid #39456e;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.filters__active {
+  margin: 0.7rem 0 0;
+  color: var(--accent);
+  font-size: 0.8rem;
+}
+
 .status.error {
   color: #ff9b9b;
 }

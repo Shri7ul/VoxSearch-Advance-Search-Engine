@@ -61,6 +61,8 @@ def test_search_accepts_embedding_vector_and_forwards_to_repo() -> None:
         video_id=None,
         transcript_asset_id=None,
         model_id=None,
+        language=None,
+        max_duration_seconds=None,
     )
 
 
@@ -211,6 +213,8 @@ def test_search_valid_filters_forwarded_to_repo() -> None:
         video_id=vid,
         transcript_asset_id=aid,
         model_id=mid,
+        language=None,
+        max_duration_seconds=None,
     )
 
 
@@ -228,6 +232,33 @@ def test_search_rejects_invalid_transcript_asset_id_filter(bad_uuid) -> None:
     with pytest.raises(InvalidSearchFilterError):
         svc.search(UNIT_VECTOR, transcript_asset_id=bad_uuid)
     repo.search_similar.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"language": ""},
+        {"language": "   "},
+        {"language": "x" * 17},
+        {"max_duration_seconds": 0},
+        {"max_duration_seconds": 90000},
+        {"max_duration_seconds": True},
+        {"max_duration_seconds": 1.5},
+    ],
+)
+def test_goal33_filters_are_rejected(kwargs) -> None:
+    service, _, repo = _service()
+    with pytest.raises(InvalidSearchFilterError):
+        service.search(UNIT_VECTOR, **kwargs)
+    repo.search_similar.assert_not_called()
+
+
+def test_goal33_filters_are_forwarded() -> None:
+    service, _, repo = _service()
+    service.search(UNIT_VECTOR, language="en", max_duration_seconds=300)
+    kwargs = repo.search_similar.call_args.kwargs
+    assert kwargs["language"] == "en"
+    assert kwargs["max_duration_seconds"] == 300
 
 
 @pytest.mark.parametrize("bad_mid", ["", "   ", 123, True])

@@ -8,6 +8,7 @@ import {
 import {
   SearchApiClient,
   createRequestTracker,
+  type SearchFilters,
   type SearchResultSnippet,
 } from "@/lib/search-api";
 import { toResultCardModel } from "@/lib/result-cards";
@@ -21,6 +22,8 @@ import { toResultCardModel } from "@/lib/result-cards";
  */
 export default function HomePage() {
   const [query, setQuery] = useState("");
+  const [language, setLanguage] = useState("");
+  const [maxDurationSeconds, setMaxDurationSeconds] = useState("");
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">(
     "idle",
   );
@@ -53,6 +56,12 @@ export default function HomePage() {
     // Ignore a second submit while a request is already in flight.
     if (inFlight.current) return;
 
+    const filters: SearchFilters = {
+      language: language || null,
+      maxDurationSeconds: maxDurationSeconds
+        ? Number(maxDurationSeconds)
+        : null,
+    };
     const { id, controller } = tracker.next();
     inFlight.current = true;
     setStatus("loading");
@@ -60,7 +69,7 @@ export default function HomePage() {
     setResults([]);
 
     try {
-      const response = await client.search(validation.value, controller.signal);
+      const response = await client.search(validation.value, controller.signal, filters);
       if (!tracker.isCurrent(id)) return; // stale response
       setResults(response.results);
       setStatus("success");
@@ -78,6 +87,20 @@ export default function HomePage() {
     } finally {
       if (tracker.isCurrent(id)) inFlight.current = false;
     }
+  }
+
+  function markFiltersChanged() {
+    tracker.abortAll();
+    inFlight.current = false;
+    setStatus("idle");
+    setMessage("Filters changed — submit to search.");
+    setResults([]);
+  }
+
+  function resetFilters() {
+    setLanguage("");
+    setMaxDurationSeconds("");
+    markFiltersChanged();
   }
 
   return (
@@ -107,6 +130,50 @@ export default function HomePage() {
             {status === "loading" ? "Searching…" : "Search transcripts"}
           </button>
         </form>
+
+        <fieldset className="filters" disabled={status === "loading"}>
+          <legend>Refine results</legend>
+          <div className="filters__row">
+            <label htmlFor="filter-language">Language</label>
+            <select
+              id="filter-language"
+              value={language}
+              onChange={(event) => {
+                setLanguage(event.target.value);
+                markFiltersChanged();
+              }}
+            >
+              <option value="">Any language</option>
+              <option value="en">English</option>
+              <option value="bn">Bangla</option>
+            </select>
+
+            <label htmlFor="filter-duration">Video duration</label>
+            <select
+              id="filter-duration"
+              value={maxDurationSeconds}
+              onChange={(event) => {
+                setMaxDurationSeconds(event.target.value);
+                markFiltersChanged();
+              }}
+            >
+              <option value="">Any duration</option>
+              <option value="300">Up to 5 minutes</option>
+              <option value="900">Up to 15 minutes</option>
+              <option value="3600">Up to 1 hour</option>
+            </select>
+
+            <button type="button" className="filters__reset" onClick={resetFilters}>
+              Clear filters
+            </button>
+          </div>
+          {(language !== "" || maxDurationSeconds !== "") && (
+            <p className="filters__active" data-testid="active-filters">
+              Active filters: {language || "any language"} ·{" "}
+              {maxDurationSeconds ? `≤ ${Number(maxDurationSeconds) / 60} min` : "any duration"}
+            </p>
+          )}
+        </fieldset>
 
         <p
           className={`status ${status}`}

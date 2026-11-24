@@ -7,6 +7,7 @@ import {
   SearchApiError,
   buildSearchRequest,
   buildSearchUrl,
+  normalizeFilters,
   createRequestTracker,
   describeApiError,
   parseSearchResponse,
@@ -63,6 +64,50 @@ test("client sends a POST JSON request and returns parsed results", async () => 
   assert.deepEqual(JSON.parse(call.init.body as string), {
     query: "  latency  ",
     top_k: 10,
+  });
+});
+
+test("Goal 33 filters use the exact backend field names", () => {
+  assert.deepEqual(
+    buildSearchRequest("latency", 10, {
+      language: "en",
+      maxDurationSeconds: 900,
+    }),
+    { query: "latency", top_k: 10, language: "en", max_duration_seconds: 900 },
+  );
+  assert.deepEqual(buildSearchRequest("latency"), {
+    query: "latency",
+    top_k: 10,
+  });
+  assert.deepEqual(buildSearchRequest("latency", 10, { language: "" }), {
+    query: "latency",
+    top_k: 10,
+  });
+});
+
+test("invalid filter values are rejected before any request", () => {
+  for (const filters of [
+    { language: "x".repeat(17) },
+    { language: 123 },
+    { maxDurationSeconds: 0 },
+    { maxDurationSeconds: 90000 },
+    { maxDurationSeconds: 1.5 },
+    { maxDurationSeconds: "900" },
+  ]) {
+    assert.throws(() => normalizeFilters(filters), SearchApiError);
+  }
+});
+
+test("client sends filters in the JSON body", async () => {
+  const calls: unknown[] = [];
+  const client = new SearchApiClient(fakeFetch(okResponse(validPayload), calls));
+  await client.search("query", undefined, { language: "bn", maxDurationSeconds: 300 });
+  const call = calls[0] as { init: RequestInit };
+  assert.deepEqual(JSON.parse(call.init.body as string), {
+    query: "query",
+    top_k: 10,
+    language: "bn",
+    max_duration_seconds: 300,
   });
 });
 

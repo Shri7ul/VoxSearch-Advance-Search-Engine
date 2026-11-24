@@ -67,9 +67,47 @@ export function buildSearchUrl(baseUrl: string = DEFAULT_API_BASE_URL): string {
   return `${baseUrl.replace(/\/+$/, "")}${API_PREFIX}/search`;
 }
 
+export type SearchFilters = {
+  language?: string | null;
+  maxDurationSeconds?: number | null;
+};
+
+/** Validate and narrow Goal 33 filters to the backend's exact field names. */
+export function normalizeFilters(filters?: SearchFilters): {
+  language?: string;
+  max_duration_seconds?: number;
+} {
+  if (!filters) return {};
+  const out: { language?: string; max_duration_seconds?: number } = {};
+  if (filters.language !== undefined && filters.language !== null) {
+    if (typeof filters.language !== "string" || filters.language.length > 16) {
+      throw new SearchApiError("Invalid language filter.");
+    }
+    const cleaned = filters.language.trim();
+    if (cleaned.length > 0) out.language = cleaned;
+  }
+  if (filters.maxDurationSeconds !== undefined && filters.maxDurationSeconds !== null) {
+    const value = filters.maxDurationSeconds;
+    if (
+      typeof value !== "number" ||
+      !Number.isInteger(value) ||
+      value < 1 ||
+      value > 86400
+    ) {
+      throw new SearchApiError("Invalid duration filter.");
+    }
+    out.max_duration_seconds = value;
+  }
+  return out;
+}
+
 /** Build the exact JSON body expected by the backend for a text query. */
-export function buildSearchRequest(query: string, topK: number = DEFAULT_TOP_K) {
-  return { query, top_k: topK };
+export function buildSearchRequest(
+  query: string,
+  topK: number = DEFAULT_TOP_K,
+  filters?: SearchFilters,
+) {
+  return { query, top_k: topK, ...normalizeFilters(filters) };
 }
 
 /** Convert a safe backend error payload into a short, credential-free message. */
@@ -219,13 +257,17 @@ export class SearchApiClient {
     this._baseUrl = baseUrl ?? DEFAULT_API_BASE_URL;
   }
 
-  async search(query: string, signal?: AbortSignal): Promise<SearchApiResponse> {
+  async search(
+    query: string,
+    signal?: AbortSignal,
+    filters?: SearchFilters,
+  ): Promise<SearchApiResponse> {
     let response: FetchResponseLike;
     try {
       response = await this._fetch(buildSearchUrl(this._baseUrl), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildSearchRequest(query)),
+        body: JSON.stringify(buildSearchRequest(query, DEFAULT_TOP_K, filters)),
         signal,
       });
     } catch (error) {

@@ -330,6 +330,8 @@ class VideoChunkSearchService:
         video_id: uuid.UUID | None = None,
         transcript_asset_id: uuid.UUID | None = None,
         model_id: str | None = None,
+        language: str | None = None,
+        max_duration_seconds: int | None = None,
     ) -> list[ChunkSearchResult]:
         """Validate search inputs and retrieve ranked candidate chunks.
 
@@ -345,12 +347,16 @@ class VideoChunkSearchService:
             transcript_asset_id=transcript_asset_id,
             model_id=model_id,
         )
+        validated_language = self._validate_language(language)
+        validated_duration = self._validate_duration(max_duration_seconds)
         return self._repo.search_similar(
             validated_vector.values,
             top_k=validated_k,
             video_id=video_id,
             transcript_asset_id=transcript_asset_id,
             model_id=model_id,
+            language=validated_language,
+            max_duration_seconds=validated_duration,
         )
 
     @staticmethod
@@ -360,6 +366,33 @@ class VideoChunkSearchService:
             return validate_top_k(top_k)
         except ValueError as exc:
             raise InvalidTopKError(str(exc)) from exc
+
+    @staticmethod
+    def _validate_language(language: Any) -> str | None:
+        """Goal 33 language filter: exact stored code, max 16 chars."""
+        if language is None:
+            return None
+        if not isinstance(language, str) or not language.strip():
+            raise InvalidSearchFilterError("language must be a non-empty string")
+        cleaned = language.strip()
+        if len(cleaned) > 16:
+            raise InvalidSearchFilterError("language exceeds 16 characters")
+        return cleaned
+
+    @staticmethod
+    def _validate_duration(max_duration_seconds: Any) -> int | None:
+        """Goal 33 duration filter: inclusive upper bound in whole seconds."""
+        if max_duration_seconds is None:
+            return None
+        if (
+            isinstance(max_duration_seconds, bool)
+            or not isinstance(max_duration_seconds, int)
+            or not 1 <= max_duration_seconds <= 86400
+        ):
+            raise InvalidSearchFilterError(
+                "max_duration_seconds must be an integer between 1 and 86400"
+            )
+        return max_duration_seconds
 
     @staticmethod
     def _validate_query_vector(

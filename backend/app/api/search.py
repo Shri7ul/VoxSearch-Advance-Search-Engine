@@ -72,6 +72,9 @@ class SearchRequest(BaseModel):
     video_id: UUID | None = None
     transcript_asset_id: UUID | None = None
     model_id: StrictStr | None = None
+    # Goal 33 refinement filters, backed by existing schema columns.
+    language: StrictStr | None = Field(default=None, max_length=16)
+    max_duration_seconds: StrictInt | None = Field(default=None, ge=1, le=86400)
 
     @model_validator(mode="after")
     def _exactly_one_query_source(self) -> "SearchRequest":
@@ -128,6 +131,8 @@ def search(
             video_id=payload.video_id,
             transcript_asset_id=payload.transcript_asset_id,
             model_id=payload.model_id,
+            language=payload.language,
+            max_duration_seconds=payload.max_duration_seconds,
         )
     except InvalidEmbeddingInputError as exc:
         raise HTTPException(

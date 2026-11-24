@@ -32,7 +32,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.db.models import Video, VideoChunk
+from app.db.models import TranscriptAsset, Video, VideoChunk
 from app.repositories.base import BaseRepository
 
 # Goal 17 retrieval bounds. The repository owns the data-access bound so that a
@@ -243,6 +243,8 @@ class VideoChunkRepository(BaseRepository):
         video_id: uuid.UUID | None = None,
         transcript_asset_id: uuid.UUID | None = None,
         model_id: str | None = None,
+        language: str | None = None,
+        max_duration_seconds: int | None = None,
     ) -> list[ChunkSearchResult]:
         """Retrieve the top-k most similar chunks by cosine distance (Goal 17).
 
@@ -288,6 +290,14 @@ class VideoChunkRepository(BaseRepository):
             stmt = stmt.where(VideoChunk.transcript_asset_id == transcript_asset_id)
         if model_id is not None:
             stmt = stmt.where(VideoChunk.model_id == model_id)
+        # Goal 33 refinement filters, backed by existing schema columns only.
+        if language is not None:
+            stmt = stmt.join(
+                TranscriptAsset,
+                VideoChunk.transcript_asset_id == TranscriptAsset.id,
+            ).where(TranscriptAsset.language == language)
+        if max_duration_seconds is not None:
+            stmt = stmt.where(Video.duration_seconds <= max_duration_seconds)
 
         stmt = stmt.order_by(
             dist.asc(),

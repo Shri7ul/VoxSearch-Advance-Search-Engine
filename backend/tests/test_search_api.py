@@ -14,7 +14,11 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.search import get_query_embedding_service, get_search_service
+from app.api.search import (
+    get_query_embedding_service,
+    get_search_service,
+    get_vector_retrieval_service,
+)
 from app.db.session import DatabaseNotConfiguredError, get_db
 from app.embeddings.contracts import InvalidEmbeddingInputError
 from app.embeddings.query import (
@@ -223,6 +227,45 @@ def test_invalid_top_k_is_http_422(client: TestClient, bad_k: int) -> None:
     assert response.json()["detail"] == (
         f"top_k must be between 1 and {MAX_TOP_K}, got {bad_k}"
     )
+
+
+def test_goal33_filters_are_forwarded_to_retrieval(client: TestClient) -> None:
+    from app.services.retrieval import VectorRetrievalService
+    from unittest.mock import MagicMock
+
+    service = MagicMock()
+    service.retrieve.return_value = []
+    app.dependency_overrides[get_vector_retrieval_service] = lambda: service
+    try:
+        response = client.post(
+            VERSIONED_PATH,
+            json={
+                "query": "latency",
+                "language": "bn",
+                "max_duration_seconds": 900,
+            },
+        )
+        assert response.status_code == 200
+        kwargs = service.retrieve.call_args.kwargs
+        assert kwargs["language"] == "bn"
+        assert kwargs["max_duration_seconds"] == 900
+    finally:
+        app.dependency_overrides.pop(get_vector_retrieval_service, None)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"language": ""},
+        {"max_duration_seconds": 0},
+        {"max_duration_seconds": "900"},
+    ],
+)
+def test_invalid_goal33_filters_are_http_422(client: TestClient, body) -> None:
+    response = client.post(
+        VERSIONED_PATH, json={"query_vector": UNIT_VECTOR, **body}
+    )
+    assert response.status_code == 422
 
 
 def test_wrong_vector_dimension_is_http_422(client: TestClient) -> None:

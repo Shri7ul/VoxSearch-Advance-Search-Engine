@@ -12,7 +12,9 @@ Next.js + TypeScript search homepage.
   relevance.
 - Goal 32: validated YouTube timestamp links (`lib/youtube-link.ts`) from the
   existing `youtube_video_id` and `start_ms` fields; invalid data yields no link.
-  Filters (33) are NOT implemented.
+- Goal 33: language and max-duration filters using the backend's exact
+  `language` / `max_duration_seconds` fields; any-defaults, active-filter
+  indication and a clear-filters reset.
 
 ## Layout
 
