@@ -10,6 +10,7 @@ import {
   createRequestTracker,
   type SearchResultSnippet,
 } from "@/lib/search-api";
+import { toResultCardModel } from "@/lib/result-cards";
 
 /**
  * Goal 29 search homepage + Goal 30 API integration.
@@ -30,6 +31,10 @@ export default function HomePage() {
   const client = useMemo(() => new SearchApiClient(undefined, baseUrl), [baseUrl]);
   const tracker = useMemo(() => createRequestTracker(), []);
   const inFlight = useRef(false);
+  const resultCards = useMemo(
+    () => results.map(toResultCardModel),
+    [results],
+  );
 
   // Abort in-flight work on unmount so a late response cannot touch dead state.
   useEffect(() => () => tracker.abortAll(), [tracker]);
@@ -112,17 +117,41 @@ export default function HomePage() {
           {message}
         </p>
 
-        {status === "success" && results.length > 0 && (
-          <ul className="results" aria-label="Search results">
-            {results.map((result) => (
-              <li key={result.id}>{result.text}</li>
+        {status === "success" && resultCards.length > 0 && (
+          <ol className="results" aria-label="Search results">
+            {resultCards.map((card) => (
+              <li key={card.id} className="result-card">
+                <div className="result-card__head">
+                  <span className="result-card__rank" aria-hidden="true">
+                    {card.rank}
+                  </span>
+                  <div className="result-card__meta">
+                    {card.videoLabel !== null && (
+                      <span>Video {card.videoLabel}</span>
+                    )}
+                    {card.transcriptLabel !== null && (
+                      <span>Transcript {card.transcriptLabel}</span>
+                    )}
+                    {card.chunkLabel !== null && <span>{card.chunkLabel}</span>}
+                  </div>
+                </div>
+                <p className="result-card__text">{card.text}</p>
+                <div className="result-card__foot">
+                  <span>{card.timing}</span>
+                  {card.relevance !== null && <span>{card.relevance}</span>}
+                  {card.precisionLabel !== null && (
+                    <span>{card.precisionLabel}</span>
+                  )}
+                  {card.modelLabel !== null && <span>{card.modelLabel}</span>}
+                </div>
+              </li>
             ))}
-          </ul>
+          </ol>
         )}
 
         <p className="note">
-          This homepage validates locally and calls the search API. Result cards,
-          timestamp links and filters are tracked in later goals.
+          This homepage validates locally and calls the search API. Timestamp
+          links and filters are tracked in later goals.
         </p>
       </section>
     </main>

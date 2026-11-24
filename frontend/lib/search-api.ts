@@ -19,6 +19,14 @@ export type SearchResultSnippet = {
   start_ms: number;
   end_ms: number;
   score: number;
+  // Optional metadata actually present in the backend SearchHit schema.
+  video_id?: string;
+  transcript_asset_id?: string;
+  chunk_index?: number;
+  duration_ms?: number;
+  model_id?: string;
+  timestamp_precision?: string;
+  distance?: number;
 };
 
 export type SearchApiResponse = {
@@ -115,12 +123,49 @@ export function parseSearchResponse(payload: unknown): SearchApiResponse {
     if (typeof score !== "number" || !Number.isFinite(score)) {
       throw new SearchApiError("The search API returned an invalid score.");
     }
+
+    // Optional SearchHit metadata: reject malformed values, omit absent ones.
+    const optional: Record<string, unknown> = {};
+    for (const key of [
+      "video_id",
+      "transcript_asset_id",
+      "model_id",
+      "timestamp_precision",
+    ] as const) {
+      const value = item[key];
+      if (value !== undefined) {
+        if (typeof value !== "string") {
+          throw new SearchApiError("The search API returned invalid metadata.");
+        }
+        optional[key] = value;
+      }
+    }
+    for (const key of ["chunk_index", "duration_ms"] as const) {
+      const value = item[key];
+      if (value !== undefined) {
+        if (!Number.isInteger(value) || (value as number) < 0) {
+          throw new SearchApiError("The search API returned invalid metadata.");
+        }
+        optional[key] = value;
+      }
+    }
+    if (item.distance !== undefined) {
+      if (
+        typeof item.distance !== "number" ||
+        !Number.isFinite(item.distance)
+      ) {
+        throw new SearchApiError("The search API returned an invalid distance.");
+      }
+      optional.distance = item.distance;
+    }
+
     return {
       id,
       text,
       start_ms: startMs as number,
       end_ms: endMs as number,
       score,
+      ...optional,
     };
   });
 

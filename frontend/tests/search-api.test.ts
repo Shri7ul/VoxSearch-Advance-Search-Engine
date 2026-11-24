@@ -164,7 +164,7 @@ test("422 with structured detail never exposes raw input values", () => {
   assert.ok(!describeApiError(422, { detail: ["secret"] }).includes("secret"));
 });
 
-test("extra backend fields are accepted without invention", () => {
+test("known SearchHit metadata is preserved and unknown fields are not invented", () => {
   const payload = {
     ...validPayload,
     results: [
@@ -172,18 +172,37 @@ test("extra backend fields are accepted without invention", () => {
         ...validPayload.results[0],
         distance: 0.13,
         video_id: "video-id",
+        transcript_asset_id: "asset-id",
+        chunk_index: 3,
         model_id: "BAAI/bge-m3",
+        word_count: 9, // real backend field, not used by the UI
+        unexpected_field: "ignored",
       },
     ],
   };
   const parsed = parseSearchResponse(payload);
-  assert.deepEqual(Object.keys(parsed.results[0]).sort(), [
-    "end_ms",
-    "id",
-    "score",
-    "start_ms",
-    "text",
-  ]);
+  const hit = parsed.results[0];
+  assert.equal(hit.video_id, "video-id");
+  assert.equal(hit.transcript_asset_id, "asset-id");
+  assert.equal(hit.chunk_index, 3);
+  assert.equal(hit.distance, 0.13);
+  assert.ok(!("unexpected_field" in hit));
+  assert.ok(!("word_count" in hit));
+});
+
+test("malformed optional metadata is rejected", () => {
+  for (const extra of [
+    { video_id: 123 },
+    { chunk_index: -1 },
+    { distance: Number.NaN },
+    { model_id: null },
+  ]) {
+    const payload = {
+      ...validPayload,
+      results: [{ ...validPayload.results[0], ...extra }],
+    };
+    assert.throws(() => parseSearchResponse(payload), SearchApiError);
+  }
 });
 
 test("invalid JSON is reported without leaking internals", async () => {
