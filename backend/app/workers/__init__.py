@@ -11,6 +11,13 @@ from app.workers.celery_app import (
     submit_job,
 )
 from app.workers.dispatcher import JobDispatcher, JobResult
+from app.workers.indexing import (
+    IndexingAutomationError,
+    IndexingAutomationService,
+    IndexingResult,
+    InvalidIndexingInputError,
+    build_indexing_handler,
+)
 from app.workers.jobs import JobEnvelope, JobValidationError
 from app.workers.registry import TaskRegistry
 from app.workers.retry import (
@@ -35,6 +42,11 @@ __all__ = [
     "JobEnvelope",
     "JobResult",
     "JobValidationError",
+    "IndexingAutomationError",
+    "IndexingAutomationService",
+    "IndexingResult",
+    "InvalidIndexingInputError",
+    "build_indexing_handler",
     "TaskRegistry",
     "PermanentJobError",
     "RetryConfigError",

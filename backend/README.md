@@ -2370,3 +2370,22 @@ and retry-exhaustion errors suppress raw secret-bearing causes. Focused tests:
 - No import-time network, Celery dependency leak, DB write, migration or
   Goal 42 indexing automation.
 - `tests/test_retry_mechanism.py` — 20 tests with mocked sleeps.
+
+---
+
+## 34. Goal 42 — Indexing automation (End-to-end ingestion)
+
+> **Status: ACCEPTED** (adversarial audit complete, injected-boundary tests
+> passed). Live ingestion, Redis/Celery and PostgreSQL/pgvector NOT VERIFIED.
+
+Audit fixes: ingestion identity UUIDs are validated before chunking, and the
+persistence count must exactly match the embedded chunk count. Focused tests:
+12 passed; full backend suite: 1599 passed, 5 skipped, 1 warning.
+
+- `app/workers/indexing.py` — `IndexingAutomationService` composes the accepted
+  ingestion, production chunking, Goal 15 embedding and Goal 16 persistence
+  stages without duplicating their logic.
+- Worker jobs carry JSON-safe data; an injected `aligned_fetcher` resolves rich
+  aligned-sentence objects. Failures and under-persisted outputs fail closed.
+- No new route, dependency, migration, DB write or Goal 43 work.
+- `tests/test_indexing_automation.py` — 12 tests with injected boundaries.
