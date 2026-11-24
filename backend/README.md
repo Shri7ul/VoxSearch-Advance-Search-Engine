@@ -2429,3 +2429,24 @@ tests: 41 passed; full backend suite: 1675 passed, 5 skipped, 1 warning.
 - No network, DB, model or live search call; no Goal 47 work.
 - `tests/test_timestamp_evaluation.py` and `tests/test_latency_benchmark.py`
   cover boundaries, failure paths and determinism.
+
+---
+
+## 37. Goals 47–48 — Production Docker and monitoring
+
+> **Status: both ACCEPTED** (adversarial audits complete, static/injected tests
+> passed). No Docker build, run or live monitoring infrastructure was used.
+
+Audit fixes: added web/api Compose healthchecks and documented that pinned tags
+are not digest-pinned; made log-event fields truly immutable and redacted
+mappings nested inside lists. Combined focused tests: 34 passed; full backend
+suite: 1709 passed, 5 skipped, 1 warning.
+
+- `infrastructure/docker/` — pinned backend/frontend Dockerfiles, Compose
+  with api/web/redis, healthchecks, persistent Redis volume, root
+  `.dockerignore`, and a generated frontend `package-lock.json`.
+- `app/monitoring/` — immutable secret-safe log events and bounded
+  in-process metrics with validated inputs; no log handler, I/O, endpoint
+  or external monitoring dependency.
+- No Goal 49/50 work, migration or production migration executed.
+- Tests: `test_production_docker.py` (7) and `test_monitoring.py` (26).
