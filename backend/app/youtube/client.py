@@ -29,7 +29,8 @@ DEFAULT_TIMEOUT_SECONDS = 10.0
 # Only the single probe resource is allowed; no discovery surface is exposed.
 # `i18nLanguages.list(part=snippet)` is a lightweight Data API v3 method that
 # accepts an API key and returns no video / channel data.
-_ALLOWED_PATHS = frozenset({"i18nLanguages"})
+_ALLOWED_PATHS = frozenset({"i18nLanguages", "search", "videos"})
+MAX_VIDEO_IDS_PER_CALL = 50
 _QUOTA_REASONS = frozenset(
     {
         "quotaExceeded",
@@ -139,8 +140,12 @@ def _error_reason(response: Any) -> str | None:
     return None
 
 
+class YouTubeResponseError(YouTubeAuthError):
+    """The YouTube API returned malformed or unexpected JSON."""
+
+
 class YouTubeApiClient:
-    """Validate configuration and probe YouTube Data API authentication."""
+    """Validate configuration and call allowlisted YouTube Data API methods."""
 
     def __init__(
         self,
@@ -195,26 +200,24 @@ class YouTubeApiClient:
             f"?{urllib.parse.urlencode(safe_params)}"
         )
 
-    def verify_authentication(self) -> YouTubeAuthStatus:
-        """Probe authentication without consuming video metadata.
-
-        A non-2xx response from the Data API is mapped to a closed error; the
-        URL (which contains the key) is never included in the raised message.
-        """
-        url = self.authenticated_url("i18nLanguages", {"part": "snippet"})
+    def _request(self, path: str, params: dict[str, str]) -> Any:
+        """Issue one allowlisted GET and return the transport response."""
+        url = self.authenticated_url(path, params)
         try:
-            response = self._transport(url, self._timeout)
+            return self._transport(url, self._timeout)
         except YouTubeAuthError:
             raise
         except Exception as exc:  # noqa: BLE001 - never leak a URL or key
             raise YouTubeRequestError(
                 f"YouTube API request failed ({type(exc).__name__})"
             ) from exc
-        status = getattr(response, "status", None)
+
+    @staticmethod
+    def _check_status(status: Any, response: Any) -> None:
         if not isinstance(status, int):
             raise YouTubeRequestError("YouTube API returned an invalid status")
         if 200 <= status < 300:
-            return YouTubeAuthStatus()
+            return
         reason = _error_reason(response)
         if reason in _QUOTA_REASONS:
             raise YouTubeQuotaError(f"YouTube API quota exhausted ({reason})")
@@ -226,13 +229,33 @@ class YouTubeApiClient:
             raise YouTubeAuthFailedError(
                 f"YouTube API rejected the request (HTTP {status})"
             )
-        raise YouTubeRequestError(
-            f"YouTube API authentication probe failed (HTTP {status})"
-        )
+        raise YouTubeRequestError(f"YouTube API request failed (HTTP {status})")
+
+    def get_json(self, path: str, params: dict[str, str]) -> dict[str, Any]:
+        """GET an allowlisted resource and validate the JSON object shape."""
+        response = self._request(path, params)
+        self._check_status(getattr(response, "status", None), response)
+        body = getattr(response, "body", None)
+        if not isinstance(body, (bytes, str)):
+            raise YouTubeResponseError("YouTube API returned no response body")
+        try:
+            payload = json.loads(body)
+        except (ValueError, TypeError) as exc:
+            raise YouTubeResponseError("YouTube API returned invalid JSON") from exc
+        if not isinstance(payload, dict):
+            raise YouTubeResponseError("YouTube API returned a non-object JSON value")
+        return payload
+
+    def verify_authentication(self) -> YouTubeAuthStatus:
+        """Probe authentication without consuming video metadata."""
+        response = self._request("i18nLanguages", {"part": "snippet"})
+        self._check_status(getattr(response, "status", None), response)
+        return YouTubeAuthStatus()
 
 
 __all__ = [
     "DEFAULT_YOUTUBE_API_BASE_URL",
+    "MAX_VIDEO_IDS_PER_CALL",
     "YouTubeApiClient",
     "YouTubeAuthError",
     "YouTubeAuthFailedError",
@@ -242,5 +265,6 @@ __all__ = [
     "YouTubeNotConfiguredError",
     "YouTubeQuotaError",
     "YouTubeRequestError",
+    "YouTubeResponseError",
     "YouTubeTransport",
 ]

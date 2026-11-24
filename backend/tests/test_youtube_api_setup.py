@@ -83,7 +83,7 @@ def test_unconfigured_client_cannot_build_or_probe() -> None:
     client = YouTubeApiClient(transport=lambda url, timeout: None)
     assert client.is_configured() is False
     with pytest.raises(YouTubeNotConfiguredError):
-        client.authenticated_url("videos", {"part": "id"})
+        client.authenticated_url("channels", {"part": "id"})
     with pytest.raises(YouTubeNotConfiguredError):
         client.verify_authentication()
 
@@ -113,9 +113,9 @@ def test_authenticated_url_is_https_encoded_and_keyed() -> None:
 def test_url_builder_rejects_non_allowlisted_resources_and_bad_params() -> None:
     client, _ = _client()
     with pytest.raises(YouTubeAuthError):
-        client.authenticated_url("search", {"q": "x"})
+        client.authenticated_url("playlists", {"part": "id"})
     with pytest.raises(YouTubeAuthError):
-        client.authenticated_url("videos", {"part": "id"})
+        client.authenticated_url("channels", {"part": "id"})
     with pytest.raises(YouTubeAuthError):
         client.authenticated_url("i18nLanguages", {"part": 123})
 

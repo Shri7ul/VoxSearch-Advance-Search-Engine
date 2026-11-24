@@ -2223,3 +2223,28 @@ suite: 1367 passed, 5 skipped, 1 warning.
   channel registry or OAuth flow (Goals 35–38), no migration and no new
   dependency was added.
 - `tests/test_youtube_api_setup.py` — 31 tests with a mocked transport.
+
+---
+
+## 27. Goal 35 — Video discovery (Metadata retrieval)
+
+> **Status: ACCEPTED** (adversarial audit complete, mocked-transport validation
+> passed). Live YouTube API verification NOT VERIFIED.
+
+Audit fixes: `snippet.channelTitle` is now required metadata; duplicate input
+IDs and duplicate API result rows are rejected instead of silently deduped or
+overwritten. Focused tests: 48 passed; full backend suite: 1415 passed,
+5 skipped, 1 warning.
+
+- `app/youtube/discovery.py` — `search_videos` (`search.list`), `get_video_metadata`
+  (`videos.list`) and `VideoDiscoveryService.discover`, reusing Goal 34's
+  authenticated client and error taxonomy. API resource/parameter choices follow
+  Google's official Data API v3 documentation.
+- Fail-closed validation: 11-character video ids, required snippet fields,
+  timezone-aware RFC 3339 timestamps, bounded ISO-8601 durations, all requested
+  metadata present, and bounded requests (query 200 chars, 1–50 results, 1–50 ids,
+  page token 512 chars). Quota/restriction/auth/transport failures are never
+  reported as an empty successful discovery.
+- No DB writes, migration, new dependency, source credentials, channel registry,
+  OAuth flow or transcript ingestion (Goals 36–38).
+- `tests/test_youtube_video_discovery.py` — 48 tests with a mocked transport.
